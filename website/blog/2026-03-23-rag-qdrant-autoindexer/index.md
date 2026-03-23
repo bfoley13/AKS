@@ -485,13 +485,60 @@ The AutoIndexer will clone the repository, discover all matching Markdown files,
 
 ## Leveraging the RAGEngine: Querying Your Knowledge Base
 
-Once the AutoIndexer has completed indexing, the exciting part begins — querying your Kubernetes documentation knowledge base.
+Once the AutoIndexer has completed indexing, the exciting part begins, querying your Kubernetes documentation knowledge base. To make the RAGEngine accessible outside the cluster, we'll expose it via a Kubernetes `LoadBalancer` Service that provisions a public IP.
 
-### Port-Forward the RAGEngine Service
+### Expose the RAGEngine with a Public IP
+
+Create a `LoadBalancer` Service that fronts the RAGEngine:
+
+```yaml
+# ragengine-public-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ragengine-public
+  namespace: default
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: ragengine
+```
 
 ```bash
-kubectl port-forward svc/ragengine 5789:80
+kubectl apply -f ragengine-public-service.yaml
 ```
+
+Wait for Azure to provision a public IP and retrieve it:
+
+```bash
+kubectl get svc ragengine-public --watch
+```
+
+Once the `EXTERNAL-IP` column transitions from `<pending>` to an IP address, note it down:
+
+```
+NAME                TYPE           CLUSTER-IP    EXTERNAL-IP     PORT(S)        AGE
+ragengine-public    LoadBalancer   10.0.45.123   20.XX.XX.XX     80:31234/TCP   2m
+```
+
+Store it in an environment variable for convenience:
+
+```bash
+export RAGENGINE_IP=$(kubectl get svc ragengine-public -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "RAGEngine endpoint: http://$RAGENGINE_IP"
+```
+
+> **⚠️ Security Note:** This creates a publicly accessible endpoint with no authentication. For production workloads, consider adding TLS termination, or restrict access with a [Network Security Group (NSG)](https://learn.microsoft.com/en-us/azure/aks/concepts-security#azure-network-security-groups) to limit traffic to known IP ranges. You can also use `loadBalancerSourceRanges` in the Service spec to allowlist specific CIDRs:
+> ```yaml
+> spec:
+>   loadBalancerSourceRanges:
+>   - "203.0.113.0/24"  # Your office/VPN CIDR
+> ```
 
 ### Using the `/retrieve` API
 
@@ -500,7 +547,7 @@ The `/retrieve` endpoint is the core of the RAGEngine's search capability. It pe
 **Basic Retrieve Request:**
 
 ```bash
-curl -X POST http://localhost:5789/retrieve \
+curl -X POST http://$RAGENGINE_IP/retrieve \
      -H "Content-Type: application/json" \
      -d '{
        "index_name": "k8s-docs",
@@ -551,15 +598,21 @@ Notice the rich metadata in each result — you can see the exact file path in t
 
 ### Programmatic Access with the Python Client
 
-For application developers, KAITO provides the [`kaito-rag-engine-client`](https://pypi.org/project/kaito-rag-engine-client/) Python library for programmatic access:
+For application developers, KAITO provides the [`kaito-rag-engine-client`](https://pypi.org/project/kaito-rag-engine-client/) Python library for programmatic access. Since the RAGEngine is now exposed via a public IP, you can connect directly from any machine — no `kubectl port-forward` required:
+
+```bash
+pip install kaito-rag-engine-client
+```
 
 ```python
 from kaito_rag_engine_client import Client
 from kaito_rag_engine_client.models import RetrieveRequest
 from kaito_rag_engine_client.api.index import retrieve_index
 
-# Initialize the client
-client = Client(base_url="http://localhost:5789")
+# Point the client at the RAGEngine's public IP
+RAGENGINE_URL = "http://20.XX.XX.XX"  # Replace with your EXTERNAL-IP
+
+client = Client(base_url=RAGENGINE_URL)
 
 # Retrieve relevant Kubernetes docs
 retrieve_resp = retrieve_index.sync(
@@ -579,7 +632,7 @@ for result in retrieve_resp.results:
     print("---")
 ```
 
-This makes it straightforward to integrate RAGEngine context retrieval into chatbots, developer tools, documentation search engines, or any application that benefits from grounded AI responses.
+Because the endpoint is publicly reachable, this same code works from local development machines, CI/CD pipelines, serverless functions, or any other service — making it straightforward to integrate RAGEngine context retrieval into chatbots, developer tools, documentation search engines, or any application that benefits from grounded AI responses.
 
 ## What We've Built
 
