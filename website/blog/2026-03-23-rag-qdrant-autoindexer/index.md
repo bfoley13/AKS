@@ -14,7 +14,7 @@ In this blog, we'll walk you through building an end-to-end Retrieval-Augmented 
 
 ## Introduction
 
-Modern AI applications increasingly rely on Retrieval-Augmented Generation (RAG) to ground large language models (LLMs) in up-to-date data. Rather than depending solely on what a model memorized during training, RAG dynamically retrieves relevant documents and feeds them as context to the LLM, producing answers that are accurate, current, and grounded in your own content.
+Modern AI applications increasingly rely on Retrieval-Augmented Generation (RAG) to ground large language models (LLMs) in up to date data. Rather than depending solely on what a model memorized during training, RAG dynamically retrieves relevant documents and feeds them as context to the LLM, producing answers that are accurate, current, and grounded in your own content.
 
 But building a production RAG pipeline involves orchestrating several moving parts:
 
@@ -549,28 +549,6 @@ Notice the rich metadata in each result — you can see the exact file path in t
 | `query` | The natural language question or search query |
 | `max_node_count` | Maximum number of document chunks to return |
 
-### Using the `/v1/chat/completions` API
-
-If you have an LLM inference endpoint configured (via the `inferenceService.url` field in the RAGEngine spec), you can also use the OpenAI-compatible chat completions API. RAGEngine will automatically retrieve relevant context and inject it into the LLM prompt:
-
-```bash
-curl -X POST http://localhost:5789/v1/chat/completions \
-     -H "Content-Type: application/json" \
-     -d '{
-       "index_name": "k8s-docs",
-       "model": "your-model-name",
-       "messages": [
-         {
-           "role": "user",
-           "content": "What is the difference between a Deployment and a StatefulSet?"
-         }
-       ],
-       "max_tokens": 300
-     }'
-```
-
-This endpoint handles the full RAG pipeline end-to-end: it retrieves the most relevant Kubernetes documentation chunks, assembles them as context, and sends the augmented prompt to the LLM for generation.
-
 ### Programmatic Access with the Python Client
 
 For application developers, KAITO provides the [`kaito-rag-engine-client`](https://pypi.org/project/kaito-rag-engine-client/) Python library for programmatic access:
@@ -620,15 +598,11 @@ Now that you have a working RAG knowledge base on AKS, here's how to extend it:
 - **Add more data sources** — Create additional AutoIndexer resources to index your internal documentation, runbooks, or code repositories alongside the Kubernetes docs
 - **Configure scheduled re-indexing** — Add a `schedule` field to your AutoIndexer (e.g., `"0 */6 * * *"` for every 6 hours) to keep your knowledge base fresh automatically
 - **Enable drift detection** — Switch your `driftRemediationPolicy.strategy` to `Auto` to automatically reconcile when the source drifts from the index
-- **Connect an LLM inference endpoint** — Point the RAGEngine's `inferenceService.url` to an OpenAI-compatible inference endpoint (such as one provisioned by [KAITO Workspace](https://kaito-project.github.io/kaito/docs/) or [llm-d](https://llm-d.ai/)) to enable the full `/v1/chat/completions` RAG pipeline
-- **Scale Qdrant for production** — Deploy Qdrant in clustered mode with replicas for high availability, or leverage snapshot and backup features for disaster recovery
-- **Explore additional vector store options** — KAITO RAGEngine's pluggable storage architecture means you can swap Qdrant for other vector stores as your needs evolve
 
 ## Resources
 
 - [KAITO RAGEngine Documentation](https://kaito-project.github.io/kaito/docs/rag)
 - [KAITO AutoIndexer Repository](https://github.com/kaito-project/autoindexer)
-- [Qdrant RAG + AutoIndexer Cookbook Example](https://github.com/kaito-project/kaito-cookbook/pull/13)
 - [KAITO Project](https://github.com/kaito-project/kaito)
 - [Qdrant Documentation](https://qdrant.tech/documentation/)
 - [`kaito-rag-engine-client` Python Package](https://pypi.org/project/kaito-rag-engine-client/)
