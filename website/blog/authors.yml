@@ -465,3 +465,12 @@ devi-vasudevan:
   socials:
     linkedin: devi-Vasudevan
     github: devivasudevan
+
+brandon-foley:
+  name: Brandon Foley
+  title: Senior Software Engineer at Microsoft
+  url: https://www.linkedin.com/in/brandonfoley13/
+  image_url: https://github.com/brandon-foley.png
+  socials:
+    linkedin: brandonfoley13
+    github: bfoley13
