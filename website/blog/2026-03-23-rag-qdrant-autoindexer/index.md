@@ -41,17 +41,17 @@ Before we start deploying, let's understand what each component brings to the ta
 
 [KAITO RAGEngine](https://kaito-project.github.io/kaito/docs/rag) is a Kubernetes CRD that provisions a complete RAG pipeline with a single YAML manifest. Under the hood, it:
 
-- Deploys and configures a **vector store** (FAISS by default, or Qdrant as we'll use here) for storing document embeddings
+- Configures a **vector store** (FAISS by default, or Qdrant as we'll use here) for storing document embeddings
 - Runs a **local embedding model** (default: [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5)) to convert documents into vectors
 - Integrates with [LlamaIndex](https://github.com/run-llama/llama_index) for LLM-based document retrieval
-- Exposes REST APIs for indexing documents, retrieving relevant context, and querying an LLM with RAG-augmented prompts
+- Exposes REST APIs for indexing documents and retrieving relevant context
 
 The key RAGEngine APIs include:
 - **`POST /index`** — Index documents into a named index
 - **`GET /indexes/{index_name}/documents`** — List indexed documents
 - **`POST /retrieve`** — Retrieve relevant document chunks using hybrid search (dense + sparse vectors)
 
-The RAGEngine only requires **general-purpose compute** (e.g., Azure `Standard_D8_v3`), making it a cost-effective option compared to GPU-heavy fine-tuning approaches.
+The RAGEngine can run on **general-purpose CPU compute** (e.g., Azure `Standard_D8_v3`) for development and lighter workloads, but for production scenarios with large-scale document ingestion or low-latency embedding requirements, you may want to leverage **GPU-accelerated nodes** (e.g., `Standard_NV36ads_A10_v5`) to significantly speed up the embedding model inference.
 
 ### Qdrant Vector Database
 
