@@ -9,7 +9,7 @@ tags: ["kaito", "ai", "rag", "ragengine", "autoindexer", "code-search"]
 
 The Kubernetes codebase is 4.5 million lines of Go spread across 22,000+ files. When you're debugging a scheduler preemption issue at 2am during an oncall incident, you don't have time to `grep -r` your way through it. You need the right file, the right function, the right line, and you need it *now*.
 
-So I built a system that lets me ask natural language questions like *"How does the scheduler handle pod preemption and victim selection?"* and get back the exact source files, function signatures, and call chains that answer it. Then I benchmarked three different retrieval strategies against 10 real questions spanning every major Kubernetes subsystem, and the results challenged some assumptions I had about leveraging RAG for coding.
+So I deployed and connected systems that lets me ask natural language questions like *"How does the scheduler handle pod preemption and victim selection?"* and get back the exact source files, function signatures, and call chains that answer it. Then I benchmarked three different retrieval strategies against 10 real questions spanning every major Kubernetes subsystem, and the results challenged some assumptions I had about leveraging RAG for coding.
 
 This post walks through the architecture, the benchmark methodology, and the data. If you're building AI-powered code intelligence tools, these findings will save you weeks of experimentation.
 
@@ -208,7 +208,7 @@ The full stack runs on AKS using three open-source components:
 - [**KAITO AutoIndexer**](https://github.com/kaito-project/autoindexer) — Automated ingestion from Git repos
 - [**Qdrant**](https://qdrant.tech/) — Production-grade vector database with hybrid search
 
-Index any codebase (not just Kubernetes), tune `max_node_count`, and bolt on local search for the queries where semantic retrieval falls short. The deployment walkthrough is in our [companion post on setting up KAITO RAGEngine with Qdrant and AutoIndexer on AKS](https://github.com/kaito-project/kaito-cookbook/tree/master/examples/qdrant-rag-autoindexer).
+Index any codebase (not just Kubernetes), tune `max_node_count`, and bolt on local search for the queries where semantic retrieval falls short. The deployment walkthrough is in our [companion kaito-cookbook on setting up KAITO RAGEngine with Qdrant and AutoIndexer](https://github.com/kaito-project/kaito-cookbook/tree/master/examples/qdrant-rag-autoindexer).
 
 ---
 
