@@ -1,0 +1,15 @@
+apiVersion: autoindexer.kaito.sh/v1alpha1
+kind: AutoIndexer
+metadata:
+  name: kubernetes-code-autoindexer
+  namespace: default
+spec:
+  dataSource:
+    git:
+      branch: master
+      repository: https://github.com/kubernetes/kubernetes.git
+    type: Git
+  driftRemediationPolicy:
+    strategy: Manual
+  indexName: kubernetes-codebase
+  ragEngine: ragengine-gpu

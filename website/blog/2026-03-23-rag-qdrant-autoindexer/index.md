@@ -1,661 +1,250 @@
 ---
-title: "Build a Kubernetes Knowledge Base on AKS with KAITO RAGEngine, Qdrant, and AutoIndexer"
+title: "I Indexed the Entire Kubernetes Codebase into a RAG Pipeline and Here's What I Learned About Code Search at Scale"
 date: 2026-03-23
-description: "Learn how to setup KAITO RAGEngine + AutoIndexer to add relevant context to your AI workloads."
+description: "How semantic retrieval, local code search, and hybrid strategies compare when navigating 4.5 million lines of Go with real benchmarks."
 authors:
 - brandon-foley
-tags: ["kaito", "rag", "qdrant", "ai", "open-source"]
+tags: ["kaito", "ai", "rag", "ragengine", "autoindexer", "code-search"]
 ---
-# Build a Kubernetes Knowledge Base on AKS with KAITO RAGEngine, Qdrant, and AutoIndexer
 
-## Overview
+The Kubernetes codebase is 4.5 million lines of Go spread across 22,000+ files. When you're debugging a scheduler preemption issue at 2am during an oncall incident, you don't have time to `grep -r` your way through it. You need the right file, the right function, the right line, and you need it *now*.
 
-In this blog, we'll walk you through building an end-to-end Retrieval-Augmented Generation (RAG) knowledge base on AKS using three powerful open-source components: [KAITO RAGEngine](https://kaito-project.github.io/kaito/docs/rag), [Qdrant](https://qdrant.tech/) vector database, and [KAITO AutoIndexer](https://github.com/kaito-project/autoindexer). By the end, you'll have a system that automatically ingests the entire Kubernetes English documentation from GitHub, stores it as searchable vector embeddings in Qdrant, and exposes a `/retrieve` API you can use to power intelligent, context-aware AI applications.
+So I built a system that lets me ask natural language questions like *"How does the scheduler handle pod preemption and victim selection?"* and get back the exact source files, function signatures, and call chains that answer it. Then I benchmarked three different retrieval strategies against 10 real questions spanning every major Kubernetes subsystem, and the results challenged some assumptions I had about leveraging RAG for coding.
 
-## Introduction
+This post walks through the architecture, the benchmark methodology, and the data. If you're building AI-powered code intelligence tools, these findings will save you weeks of experimentation.
 
-Modern AI applications increasingly rely on Retrieval-Augmented Generation (RAG) to ground large language models (LLMs) in up to date data. Rather than depending solely on what a model memorized during training, RAG dynamically retrieves relevant documents and feeds them as context to the LLM, producing answers that are accurate, current, and grounded in your own content.
+## The Setup: KAITO RAGEngine + Qdrant + The Kubernetes Source
 
-But building a production RAG pipeline involves orchestrating several moving parts:
+The retrieval backend is [KAITO RAGEngine](https://github.com/kaito-project/kaito), a Kubernetes-native RAG pipeline that runs on AKS. It uses [Qdrant](https://qdrant.tech/) as the vector store and [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) as the embedding model. The full Kubernetes source tree was chunked and indexed into a `kubernetes-codebase` index.
 
-| RAG Component | Purpose | Example |
-| --- | --- | --- |
-| **Vector Store** | Stores text as vector embeddings — numerical representations of meaning — enabling semantic search that goes beyond keyword matching | [Qdrant](https://qdrant.tech/), [FAISS](https://faiss.ai/) |
-| **Embedding Model** | Converts text into dense vectors that capture semantic meaning, so similar concepts produce similar vectors even when the words differ | [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) |
-| **Retriever + LLM** | The retriever finds the most relevant documents from the vector store; the LLM uses those documents as context to generate accurate, grounded responses | [LlamaIndex](https://docs.llamaindex.ai/) |
-| **Data Ingestion** | Automates pulling documents from source repositories, processing them, and indexing them into the vector store — keeping your knowledge base fresh | [KAITO AutoIndexer](https://github.com/kaito-project/autoindexer) |
-
-Setting all of this up manually is complex and prone to error. That's where the [Kubernetes AI Toolchain Operator](https://kaito-project.github.io/kaito/docs/) (KAITO) comes in.
-
-KAITO is a [CNCF Sandbox project](https://www.cncf.io/projects/kaito/) that makes it easy to deploy, serve, and scale AI workloads on Kubernetes without becoming a DevOps expert. Its **RAGEngine** Custom Resource Definition (CRD) gives you an end-to-end RAG pipeline out of the box, and its companion **AutoIndexer** operator automates the entire data ingestion lifecycle. Together, they let you focus on building AI applications while Kubernetes handles the infrastructure.
-
-In this blog, we'll use a practical example: **indexing the official Kubernetes English documentation** from the [kubernetes/website](https://github.com/kubernetes/website) GitHub repository, storing the embeddings in a production-grade Qdrant vector database, and querying the knowledge base using the RAGEngine `/retrieve` API.
-
-> **Note:** KAITO RAGEngine, AutoIndexer, and Qdrant are deployed as open-source solutions in this example and are not currently managed services on AKS.
-
-## What Are the Key Components?
-
-Before we start deploying, let's understand what each component brings to the table.
-
-### KAITO RAGEngine
-
-[KAITO RAGEngine](https://kaito-project.github.io/kaito/docs/rag) is a Kubernetes CRD that provisions a complete RAG pipeline with a single YAML manifest. Under the hood, it:
-
-- Configures a **vector store** (FAISS by default, or Qdrant as we'll use here) for storing document embeddings
-- Runs a **local embedding model** (default: [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5)) to convert documents into vectors
-- Integrates with [LlamaIndex](https://github.com/run-llama/llama_index) for LLM-based document retrieval
-- Exposes REST APIs for indexing documents and retrieving relevant context
-
-The key RAGEngine APIs include:
-- **`POST /index`** — Index documents into a named index
-- **`GET /indexes/{index_name}/documents`** — List indexed documents
-- **`POST /retrieve`** — Retrieve relevant document chunks using hybrid search (dense + sparse vectors)
-
-The RAGEngine can run on **general-purpose CPU compute** (e.g., Azure `Standard_D8_v3`) for development and lighter workloads, but for production scenarios with large-scale document ingestion or low-latency embedding requirements, you may want to leverage **GPU-accelerated nodes** (e.g., `Standard_NV36ads_A10_v5`) to significantly speed up the embedding model inference.
-
-### Qdrant Vector Database
-
-[Qdrant](https://qdrant.tech/) is a high-performance, open-source vector database purpose-built for similarity search and AI applications. While KAITO RAGEngine supports FAISS as a default in-memory vector store, Qdrant brings several production advantages:
-
-- **Persistent storage** — Your vector embeddings survive pod restarts and cluster upgrades
-- **Hybrid search** — Combines dense (semantic) and sparse (keyword) vector search for more accurate retrieval
-- **Scalability** — Handles millions of vectors with efficient indexing and filtering
-- **Rich metadata filtering** — Filter search results by metadata fields (source, file path, timestamp, etc.)
-- **Production-ready** — Built-in health checks, REST and gRPC APIs, and battle-tested in production workloads
-
-By pointing KAITO RAGEngine at an external Qdrant instance, you get a durable, high-performance vector store that persists independently from the RAG service itself.
-
-### KAITO AutoIndexer
-
-[KAITO AutoIndexer](https://github.com/kaito-project/autoindexer) is a Kubernetes operator that automates document ingestion into KAITO RAGEngine. Instead of manually curling documents into the `/index` API, AutoIndexer handles the complete lifecycle:
-
-- **Automated data ingestion** from multiple source types: Git repositories, static URLs, and databases
-- **Scheduled indexing** with cron-based scheduling (e.g., re-index every 6 hours)
-- **Incremental indexing** — Only processes new or changed content based on commit history
-- **Drift detection and remediation** — Detects when documents in the index drift from the source and can auto-remediate
-- **Multi-format support** — Handles text, Markdown, code files, and PDFs
-- **Batch processing** — Efficiently indexes large repositories in configurable batches
-
-The AutoIndexer follows the standard Kubernetes CRD/controller pattern. You define an `AutoIndexer` custom resource specifying your data source, target RAGEngine, and index name — the controller does the rest.
-
-## Architecture Overview
-
-Here's how the components work together:
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          AKS Cluster                                 │
-│                                                                      │
-│  ┌──────────────────┐    Indexes docs    ┌────────────────────────┐  │
-│  │  AutoIndexer     │ ──────────────────▶│  KAITO RAGEngine       │  │
-│  │  Controller      │   POST /index      │                        │  │
-│  │                  │                    │  • Embedding Model     │  │
-│  │  Watches:        │                    │    (bge-small-en-v1.5) │  │
-│  │  • Git repos     │                    │  • LlamaIndex          │  │
-│  │  • Static URLs   │                    │  • REST API Server     │  │
-│  │  • Databases     │                    │                        │  │
-│  └──────────────────┘                    └──────────┬─────────────┘  │
-│                                                     │                │
-│         ┌───────────────────────────────────────────┘                │
-│         │ Stores/retrieves embeddings                                │
-│         ▼                                                            │
-│  ┌──────────────────┐                                                │
-│  │  Qdrant          │                                                │
-│  │  Vector Database │                                                │
-│  │                  │                                                │
-│  │  • Hybrid search │                                                │
-│  │  • Persistent    │                                                │
-│  │    storage (PVC) │                                                │
-│  └──────────────────┘                                                │
-│                                                                      │
-│         ┌─────────────────────────────────────────────┐              │
-│         │              User / Application             │              │
-│         │                                             │              │
-│         │  curl POST /retrieve                        │              │
-│         │    → Returns relevant document chunks       │              │
-│         └─────────────────────────────────────────────┘              │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-The flow is:
-1. **AutoIndexer** clones the Kubernetes docs from GitHub, processes the Markdown files, and sends them to RAGEngine's `/index` API in batches
-2. **RAGEngine** converts documents into vector embeddings using the local embedding model and stores them in **Qdrant**
-3. **Users and applications** query the `/retrieve` endpoint to get relevant document chunks for LLM-generated answers grounded in the Kubernetes documentation
-
-## Let's Get Started: Deploying the Full Stack on AKS
-
-### Prerequisites
-
-- An Azure subscription
-- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) installed
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) installed
-- [Helm](https://helm.sh/docs/intro/install/) v3 installed
-
-### Step 1: Create an AKS Cluster
-
-Create a resource group and an AKS cluster with node auto-provisioning enabled:
+The API is simple:
 
 ```bash
-# Create a resource group
-az group create --name myRAGResourceGroup --location eastus
-
-# Create an AKS cluster
-az aks create \
-    --resource-group myRAGResourceGroup \
-    --name myRAGCluster \
-    --enable-addons monitoring \
-    --generate-ssh-keys \
-    --node-provisioning-mode Auto
-
-# Get credentials
-az aks get-credentials --resource-group myRAGResourceGroup --name myRAGCluster
+curl -X POST http://$RAG_HOST/retrieve \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "index_name": "kubernetes-codebase",
+    "query": "scheduler pod preemption victim selection",
+    "max_node_count": 10
+  }'
 ```
 
-### Step 2: Create Dedicated Node Pools
+You get back ranked chunks with relevance scores, file paths, and metadata. Latency is typically 90-150ms.
 
-We'll create separate node pools for Qdrant and the RAGEngine to isolate workloads:
+But the interesting question isn't whether RAG *works*, it's whether it works *well enough* for code, where precision matters more than any other domain.
 
-**Qdrant Node Pool:**
+## The Benchmark: 10 Questions Across Every Major Kubernetes Subsystem
 
-```bash
-az aks nodepool add \
-    --resource-group myRAGResourceGroup \
-    --cluster-name myRAGCluster \
-    --name qdrantpool \
-    -s Standard_D16s_v5 \
-    -c 1 \
-    --labels workload=qdrant
-```
+I designed 10 questions that a Kubernetes engineer would actually ask during development or incident response. Each targets a different subsystem and requires understanding multiple files, call chains, and data structures:
 
-**RAGEngine Node Pool (CPU-based):**
+| # | Question | Target Subsystem |
+|---|---------|:---:|
+| 1 | How does the scheduler handle pod preemption and victim selection? | `scheduler/framework/plugins/defaultpreemption` |
+| 2 | How does the scheduler evaluate topology spread constraints during filtering? | `scheduler/framework/plugins/podtopologyspread` |
+| 3 | How does the API server chain admission webhooks? | `apiserver/pkg/admission/plugin/webhook` |
+| 4 | How does the API server implement watch caching and event fan-out? | `apiserver/pkg/storage/cacher` |
+| 5 | How does kubelet evict pods under memory pressure? | `kubelet/eviction` |
+| 6 | How does kubelet probe containers for liveness/readiness? | `kubelet/prober` |
+| 7 | How does the Deployment controller implement rolling updates? | `controller/deployment` |
+| 8 | How does the garbage collector handle cascading deletion? | `controller/garbagecollector` |
+| 9 | How does kube-proxy in iptables mode program ClusterIP rules? | `proxy/iptables` |
+| 10 | How does the RBAC authorizer evaluate request permissions? | `auth/authorizer/rbac` |
 
-For most RAG workloads, CPU nodes are sufficient and cost-effective:
+Each question requires knowledge of struct definitions, interface contracts, function call chains across multiple files, and sometimes cross-subsystem interactions.
 
-```bash
-az aks nodepool add \
-    --resource-group myRAGResourceGroup \
-    --cluster-name myRAGCluster \
-    --name ragcpupool \
-    -s Standard_D8_v3 \
-    -c 1 \
-    --labels workload=ragengine
-```
+I then tested three retrieval strategies against all 10:
 
-> **Tip:** For high-performance workloads requiring GPU-accelerated embedding, you can use a GPU SKU like `Standard_NV36ads_A10_v5` instead. The RAGEngine `instanceType` in your YAML would need to match accordingly.
+1. **RAG-Only** — Pure semantic retrieval via KAITO RAGEngine
+2. **Hybrid** — RAG for semantic discovery + local `ripgrep` for structural code navigation
+3. **Local-Only** — Pure keyword search with `ripgrep` across the cloned repo
 
-### Step 3: Deploy Qdrant Vector Database
+Each strategy was implemented as an [OpenClaw](https://github.com/openclaw/openclaw) skill, a reusable, declarative instruction file that teaches an AI agent *how* to use a tool. The RAG-only skill tells the agent how to call the `/retrieve` API and interpret results. The hybrid skill layers on local search instructions: use RAG file paths to scope `ripgrep`, extract function bodies with `sed`, and discover related files the embedding model missed. No custom code, just structured guidance that any OpenClaw instance can pick up and execute.
 
-Clone the KAITO cookbook repository which contains the manifests:
+This matters because the skills are portable. Drop the SKILL.md into any OpenClaw workspace with access to a KAITO RAGEngine endpoint, and the agent immediately knows how to search the indexed codebase. The hybrid skill just needs a local clone and `ripgrep` installed. The agent handles the orchestration, calling the API, parsing results, running grep, merging context, all based on the skill's instructions.
 
-```bash
-git clone https://github.com/kaito-project/kaito-cookbook.git
-cd kaito-cookbook/examples/qdrant-rag-autoindexer
-```
+Metrics tracked per query: retrieval latency, context tokens consumed, unique source files returned, and a qualitative **completeness score**, what percentage of key implementation aspects each strategy surfaced.
 
-Deploy Qdrant with persistent storage:
+## Finding #1: The Chunk Count Sweet Spot Is Not What You'd Expect
 
-**1. Create a PersistentVolumeClaim for Qdrant storage:**
+Before comparing strategies, I needed to tune `max_node_count`, or how many chunks the RAG returns per query. I tested n=5, n=10, and n=20.
 
-```yaml
-# qdrant-pvc.yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: qdrant-storage
-  namespace: default
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 30Gi
-  storageClassName: default
-```
+| Metric | n=5 | n=10 | n=20 |
+|--------|:---:|:---:|:---:|
+| Avg Latency | 107ms | 111ms | 117ms |
+| Avg Context Tokens | 1,640 | 3,372 | 6,194 |
+| Avg Unique Files | 3.7 | 6.6 | 11.5 |
+| Avg Top Score | 0.662 | 0.700 | 0.753 |
 
-```bash
-kubectl apply -f qdrant-pvc.yaml
-```
+The latency difference is negligible, only 10ms between n=5 and n=20. What changes dramatically is file coverage and token cost.
 
-**2. Deploy the Qdrant Deployment:**
+**n=10 is the sweet spot.** It delivers 80% of n=20's file coverage (6.6 vs 11.5 unique files) at 54% of the token cost (3,372 vs 6,194 tokens). The diminishing returns from n=10 to n=20 are steep. You pay an extra 2,822 tokens to get 4.9 more files, most of which are CHANGELOGs, proto definitions, and OpenAPI specs. For the test questions, this turned out to be noise.
 
-```yaml
-# qdrant.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  labels:
-    app: qdrant
-  name: qdrant
-  namespace: default
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: qdrant
-  strategy:
-    type: Recreate
-  template:
-    metadata:
-      labels:
-        app: qdrant
-    spec:
-      containers:
-      - image: qdrant/qdrant:v1.13.4
-        imagePullPolicy: IfNotPresent
-        livenessProbe:
-          httpGet:
-            path: /livez
-            port: 6333
-          initialDelaySeconds: 10
-          periodSeconds: 30
-        name: qdrant
-        ports:
-        - containerPort: 6333
-          name: http
-        - containerPort: 6334
-          name: grpc
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 6333
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        resources:
-          limits:
-            cpu: "14"
-            memory: 56Gi
-          requests:
-            cpu: "8"
-            memory: 32Gi
-        volumeMounts:
-        - mountPath: /qdrant/storage
-          name: qdrant-data
-      nodeSelector:
-        workload: qdrant
-      volumes:
-      - name: qdrant-data
-        persistentVolumeClaim:
-          claimName: qdrant-storage
-```
+The real insight: **n=5 misses entire subsystems.** For Question 9 (iptables proxy), n=5 returned only test files and documentation. The actual `proxier.go` implementation didn't appear until n=10. If you're building a code intelligence tool on top of RAG, defaulting to n=5 can produce answers that look correct but are missing key implementation aspects.
 
-```bash
-kubectl apply -f qdrant.yaml
-```
+## Finding #2: RAG Is Fast but Structurally Blind
 
-**3. Create the Qdrant Service:**
+Here's the headline result. Three strategies, same 10 questions:
 
-```yaml
-# qdrant-service.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: qdrant
-  namespace: default
-spec:
-  ports:
-  - name: http
-    port: 6333
-    protocol: TCP
-    targetPort: 6333
-  - name: grpc
-    port: 6334
-    protocol: TCP
-    targetPort: 6334
-  selector:
-    app: qdrant
-  type: ClusterIP
-```
+| Metric | RAG-Only | Hybrid | Local-Only |
+|--------|:---:|:---:|:---:|
+| **Avg Latency** | 111ms | 4,591ms | 27,820ms |
+| **Avg Context Tokens** | 3,372 | 7,930 | 9,184 |
+| **Avg Unique Files** | 6.6 | 10.0 | 10.2 |
+| **Completeness Score** | **37%** | **65%** | **100%** |
 
-```bash
-kubectl apply -f qdrant-service.yaml
-```
+Read that completeness number again. **RAG-only surfaces 37% of the key implementation aspects.** That means for nearly two-thirds of the structural code knowledge you need interface definitions, call chains, sibling implementations, config types, but the RAG returns nothing.
 
-Verify Qdrant is running:
+This isn't a KAITO-specific problem. It's a fundamental limitation of embedding-based retrieval for code. Embeddings capture *semantic similarity* (what the code is about), but they don't capture *structural relationships* (who calls what, which interface does this implement, what other files handle the same pattern differently).
 
-```bash
-kubectl get pods -l app=qdrant
-```
+Here's a concrete example. For Question 9, "How does kube-proxy in iptables mode program ClusterIP rules?", here's what each strategy found:
 
-### Step 4: Install KAITO Components
+| Aspect | RAG-Only | Hybrid | Local-Only |
+|--------|:---:|:---:|:---:|
+| `iptables/proxier.go` implementation | ❌ | ✅ | ✅ |
+| `syncProxyRules` function | ❌ | ✅ | ✅ |
+| KUBE-SVC / KUBE-SEP chain structure | ❌ | ❌ | ✅ |
+| Cross-implementation comparison (nftables, IPVS, winkernel) | ❌ | ✅ | ✅ |
+| Proxier struct definition | ❌ | ❌ | ✅ |
 
-Install the KAITO Workspace operator and RAGEngine controller via Helm:
+RAG returned *zero* useful aspects for this question. It found test files, a README about nftables, and some tangentially related code. The actual implementation, the thing you'd need to understand to debug a kube-proxy issue, was completely absent.
 
-**KAITO Workspace:**
+This pattern repeats across questions. RAG consistently misses:
 
-```bash
-helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito
-helm repo update
+- **Interface definitions** — Found the type but not the interface it implements
+- **Entry points** — Found the implementation but not where it's called from
+- **Sibling implementations** — Found iptables but not nftables/IPVS/winkernel
+- **Configuration types** — Found the runtime code but not the config structs that control its behavior
 
-helm upgrade --install kaito-workspace kaito/workspace \
-  --namespace kaito-workspace \
-  --create-namespace \
-  --wait \
-  --take-ownership
-```
+## Finding #3: Hybrid Search Is the Practical Winner
 
-**KAITO RAGEngine:**
-
-```bash
-helm upgrade --install kaito-ragengine oci://ghcr.io/kaito-project/charts/ragengine \
-  --version 0.9.3-qdrant.2 \
-  --namespace kaito-ragengine \
-  --create-namespace \
-  --take-ownership
-```
-
-Verify both installations:
-
-```bash
-helm list -n kaito-workspace
-helm list -n kaito-ragengine
-```
-
-### Step 5: Deploy the RAGEngine Custom Resource
-
-Now deploy the RAGEngine, pointing it at Qdrant as the vector store:
-
-```yaml
-# ragengine.yaml
-apiVersion: kaito.sh/v1beta1
-kind: RAGEngine
-metadata:
-  name: ragengine
-  namespace: default
-spec:
-  compute:
-    count: 1
-    instanceType: "Standard_D8_v3"
-    labelSelector:
-      matchLabels:
-        workload: ragengine
-  embedding:
-    local:
-      modelID: "BAAI/bge-small-en-v1.5"
-  inferenceService:
-    contextWindowSize: 4096
-  storage:
-    vectorDB:
-      engine: qdrant
-      url: http://qdrant.default.svc.cluster.local:6333
-```
-
-```bash
-kubectl apply -f ragengine.yaml
-```
-
-Let's break down the key fields:
-
-| Field | Purpose |
-| --- | --- |
-| `spec.compute` | Specifies the node SKU and label selector for scheduling the RAGEngine pod on our pre-created `ragcpupool` |
-| `spec.embedding.local.modelID` | The embedding model used to convert documents into vectors. `BAAI/bge-small-en-v1.5` is a lightweight, high-quality model |
-| `spec.inferenceService.contextWindowSize` | The context window size for the LLM — controls how much retrieved text can be sent as context |
-| `spec.storage.vectorDB.engine` | Tells RAGEngine to use **Qdrant** instead of the default in-memory FAISS store |
-| `spec.storage.vectorDB.url` | The in-cluster URL of our Qdrant service |
-
-Verify the RAGEngine is ready:
-
-```bash
-kubectl get ragengines
-kubectl describe ragengine ragengine
-```
-
-Wait for the RAGEngine pod to be running and the status conditions to show ready.
-
-### Step 6: Install and Configure AutoIndexer
-
-Install the AutoIndexer operator:
-
-```bash
-helm upgrade --install kaito-autoindexer oci://ghcr.io/kaito-project/charts/autoindexer \
-  --version 0.0.0-dev.2 \
-  --namespace kaito-autoindexer \
-  --create-namespace \
-  --take-ownership
-```
-
-Now, create an AutoIndexer custom resource that pulls the Kubernetes English documentation from the [kubernetes/website](https://github.com/kubernetes/website) GitHub repository:
-
-```yaml
-# k8s-docs-autoindexer.yaml
-apiVersion: autoindexer.kaito.sh/v1alpha1
-kind: AutoIndexer
-metadata:
-  name: k8s-docs-autoindexer
-spec:
-  dataSource:
-    type: Git
-    git:
-      repository: https://github.com/kubernetes/website.git
-      branch: main
-      paths:
-        - "content/en/docs/**/*.md"
-      excludePaths:
-        - "*.png"
-        - "*.jpg"
-        - "*.svg"
-  indexName: k8s-docs
-  ragEngine: ragengine
-  driftRemediationPolicy:
-    strategy: Manual
-```
-
-```bash
-kubectl apply -f k8s-docs-autoindexer.yaml
-```
-
-Let's break down what this AutoIndexer does:
-
-| Field | Purpose |
-| --- | --- |
-| `spec.dataSource.type: Git` | Tells AutoIndexer to clone a Git repository as the data source |
-| `spec.dataSource.git.repository` | The Kubernetes website repo containing all official documentation |
-| `spec.dataSource.git.paths` | Targets only Markdown files under `content/en/docs/` — the English documentation |
-| `spec.dataSource.git.excludePaths` | Skips image files that can't be meaningfully embedded |
-| `spec.indexName` | The name of the index in RAGEngine/Qdrant where documents will be stored |
-| `spec.ragEngine` | References the RAGEngine CR we created in Step 5 |
-| `spec.driftRemediationPolicy.strategy` | Set to `Manual` — if the source drifts from the index, we'll decide when to re-index |
-
-Verify the AutoIndexer is running:
-
-```bash
-# Check the AutoIndexer custom resource status
-kubectl get autoindexers
-
-# Watch the indexing job logs
-kubectl logs -l autoindexer.kaito.sh/name=k8s-docs-autoindexer --follow
-```
-
-You should see log output showing the indexing progress:
+The hybrid strategy of using RAG for semantic discovery then `ripgrep` for structural navigation, hits the practical sweet spot:
 
 ```
-"body": "Initialized git data source handler for repository: https://github.com/kubernetes/website.git"
-"body": "AutoIndexer initialized for index 'k8s-docs' with data source type 'Git'"
-"body": "Starting document indexing process"
-"body": "Cloning repository from https://github.com/kubernetes/website.git"
-"body": "Found 850 files in repository for indexing"
-"body": "Indexing batch of 10 documents (10/850 files processed)"
-"body": "HTTP Request: POST http://ragengine.default.svc.cluster.local/index \"HTTP/1.1 200 OK\""
-...
-"body": "Indexing completed successfully"
-"body": "AutoIndexer job completed successfully"
+RAG says: "The scheduler preemption logic is in defaultpreemption/default_preemption.go"
+Local search says: "That function is called from schedule_one.go:288, and there's a PodGroup 
+variant in podgrouppreemption.go, and the PostFilter interface is defined in framework/interface.go:265"
 ```
 
-The AutoIndexer will clone the repository, discover all matching Markdown files, process them into chunks, and send them in batches to the RAGEngine `/index` API — which in turn generates embeddings and stores them in Qdrant.
+RAG provides the *"where to look"* signal. Local search provides the *"what's actually there"* precision. Together, they produce answers that include:
 
-## Leveraging the RAGEngine: Querying Your Knowledge Base
+- Exact file paths and line numbers
+- Complete function signatures
+- Caller → callee relationships
+- Parallel implementations across subsystems
+- Interface contracts that define the abstraction boundaries
 
-Once the AutoIndexer has completed indexing, the exciting part begins, querying your Kubernetes documentation knowledge base. To make the RAGEngine accessible outside the cluster, we'll expose it via a Kubernetes `LoadBalancer` Service that provisions a public IP.
+The cost is latency: 4.6 seconds average vs 111ms for RAG-only. That's because `ripgrep` across 4.5 million lines of Go takes 3-5 seconds per query, even on a fast machine. But for a code investigation tool (as opposed to a real-time chatbot), 4.6 seconds is perfectly acceptable.
 
-### Expose the RAGEngine with a Public IP
+**The key architectural insight:** The hybrid approach uses RAG file paths to *scope* the local search. Instead of grepping the entire repo blind (27.8 seconds), it greps within the 6-10 files RAG identified as relevant, then does a targeted broader search for specific identifiers. This cuts local search time by 6x compared to the local-only strategy.
 
-Create a `LoadBalancer` Service that fronts the RAGEngine:
+## Finding #4: Local-Only Is Exhaustive but Impractical
 
-```yaml
-# ragengine-public-service.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: ragengine-public
-  namespace: default
-spec:
-  type: LoadBalancer
-  ports:
-  - name: http
-    port: 80
-    protocol: TCP
-    targetPort: 5000
-  selector:
-    app: ragengine
+Local-only search achieved 100% completeness on every question, it never misses, because it's doing exhaustive keyword matching. But the tradeoffs are severe:
+
+- **251x slower than RAG** (27.8 seconds vs 111ms)
+- **Requires domain expertise** to write good grep patterns. The queries that worked used identifiers like `syncProxyRules`, `runAttemptToDeleteWorker`, `selectVictimsOnNode`, you need to already know the codebase to ask the right questions.
+- **No relevance ranking** — returns everything that matches, including generated code, test helpers, and apply-configuration boilerplate. You spend more time filtering noise.
+- **Requires a local clone** — the Kubernetes repo is ~1.3GB. Not always practical.
+
+Local search has its place, but it's not viable as an interactive code intelligence backend.
+
+## Finding #5: Token Economics Change the Calculus
+
+In production, you're paying for tokens, both the context tokens you send to the LLM and the output tokens it generates. Here's how the strategies compare:
+
+| Strategy | Avg Tokens/Query | Cost per 10 Queries (@ $3/M input) | Annual Cost (100 queries/day) |
+|----------|:---:|:---:|:---:|
+| RAG-Only (n=5) | 1,640 | $0.05 | $18 |
+| RAG-Only (n=10) | 3,372 | $0.10 | $37 |
+| RAG-Only (n=20) | 6,194 | $0.19 | $68 |
+| Hybrid | 7,930 | $0.24 | $87 |
+| Local-Only | 9,184 | $0.28 | $100 |
+
+The token differences might look small per query, but they compound. An engineering team running 100 queries a day would spend $37/year with RAG n=10 vs $87/year with hybrid, and the hybrid answers are nearly twice as complete.
+
+More importantly, the *quality* of tokens matters. RAG's 3,372 tokens are all semantically relevant snippets selected by the embedding model. Local-only's 9,184 tokens include generated code, swagger docs, and test wrappers that dilute the LLM's attention. Hybrid's 7,930 tokens combine the best of both, RAG's curated snippets plus local search's precise function bodies.
+
+## The Architecture for Production
+
+Based on these findings, here's the architecture I'd recommend for a production code intelligence system:
+
+```
+┌──────────────────────────────────────────────────────┐
+│                  Query Router                        │
+│                                                      │
+│  1. Send query to RAG (n=10)              ~111ms     │
+│  2. Check top score                                  │
+│     ├── Score ≥ 0.8 → Return RAG-only     ~111ms     │
+│     └── Score < 0.8 → Augment with local  ~4.5s      │
+│         a. Extract file paths from RAG               │
+│         b. ripgrep key identifiers in those files    │
+│         c. ripgrep across pkg/ for missed files      │
+│         d. Merge and deduplicate context             │
+│  3. Send combined context + question to LLM          │
+└──────────────────────────────────────────────────────┘
 ```
 
-```bash
-kubectl apply -f ragengine-public-service.yaml
-```
+The score-based routing is important. When RAG returns a top score ≥ 0.8, the semantic match is strong enough that local search adds little value. In our benchmark, ~30% of queries had top scores ≥ 0.8. This fast-path optimization cuts average latency from 4.6s to ~3.3s while preserving completeness on the harder questions.
 
-Wait for Azure to provision a public IP and retrieve it:
+## What This Means for AI-Powered Code Tools
 
-```bash
-kubectl get svc ragengine-public --watch
-```
+If you're building code intelligence tools, whether it's a codebase Q&A bot, an AI-powered code reviewer, or an IDE plugin, here are the lessons:
 
-Once the `EXTERNAL-IP` column transitions from `<pending>` to an IP address, note it down:
+**1. RAG alone isn't enough for code.** Embedding similarity finds the right neighborhood, but code understanding requires structural navigation such as call chains, interface hierarchies, sibling implementations. Plan for a hybrid architecture from day one.
 
-```
-NAME                TYPE           CLUSTER-IP    EXTERNAL-IP     PORT(S)        AGE
-ragengine-public    LoadBalancer   10.0.45.123   20.XX.XX.XX     80:31234/TCP   2m
-```
+**2. Chunk count tuning matters more than model choice.** Going from n=5 to n=10 improved our file coverage by 78% with zero latency penalty. That's a bigger impact than most embedding model upgrades.
 
-Store it in an environment variable for convenience:
+**3. Use RAG to scope, not to answer.** The highest-value use of RAG in code search is identifying *which files are relevant*. Once you know `default_preemption.go` is the right file, a simple `grep` gives you the function body, the callers, and the interface it implements, things embedding models can't surface.
 
-```bash
-export RAGENGINE_IP=$(kubectl get svc ragengine-public -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "RAGEngine endpoint: http://$RAGENGINE_IP"
-```
+**4. Measure completeness, not just relevance.** Standard RAG benchmarks measure whether the top-k results contain the answer. For code, the question is whether you found *all the structural pieces* needed to understand the system. Our completeness score, aspects found vs total aspects, revealed gaps that standard metrics would miss.
 
-> **⚠️ Security Note:** This creates a publicly accessible endpoint with no authentication. For production workloads, consider adding TLS termination, or restrict access with a [Network Security Group (NSG)](https://learn.microsoft.com/en-us/azure/aks/concepts-security#azure-network-security-groups) to limit traffic to known IP ranges. You can also use `loadBalancerSourceRanges` in the Service spec to allowlist specific CIDRs:
-> ```yaml
-> spec:
->   loadBalancerSourceRanges:
->   - "203.0.113.0/24"  # Your office/VPN CIDR
-> ```
+**5. The economics favor hybrid.** At $87/year for 100 queries/day, hybrid search costs less than a single engineer-hour saved per month. If it prevents even one extra hour of code archaeology per month, it's ROI-positive.
 
-### Using the `/retrieve` API
+## Try It Yourself
 
-The `/retrieve` endpoint is the core of the RAGEngine's search capability. It performs **hybrid search** — combining dense (semantic) and sparse (keyword) vector matching — to return the most relevant document chunks for your query.
+The full stack runs on AKS using three open-source components:
 
-**Basic Retrieve Request:**
+- [**KAITO RAGEngine**](https://github.com/kaito-project/kaito) — The retrieval pipeline with Qdrant vector storage
+- [**KAITO AutoIndexer**](https://github.com/kaito-project/autoindexer) — Automated ingestion from Git repos
+- [**Qdrant**](https://qdrant.tech/) — Production-grade vector database with hybrid search
 
-```bash
-curl -X POST http://$RAGENGINE_IP/retrieve \
-     -H "Content-Type: application/json" \
-     -d '{
-       "index_name": "k8s-docs",
-       "query": "How do I configure a liveness probe in Kubernetes?",
-       "max_node_count": 5
-     }'
-```
+Index any codebase (not just Kubernetes), tune `max_node_count`, and bolt on local search for the queries where semantic retrieval falls short. The deployment walkthrough is in our [companion post on setting up KAITO RAGEngine with Qdrant and AutoIndexer on AKS](https://github.com/kaito-project/kaito-cookbook/tree/master/examples/qdrant-rag-autoindexer).
 
-**Example Response:**
+---
 
-```json
-{
-  "query": "How do I configure a liveness probe in Kubernetes?",
-  "results": [
-    {
-      "doc_id": "a1b2c3d4...",
-      "node_id": "e5f6a7b8...",
-      "text": "## Define a liveness command\n\nMany applications running for long periods of time eventually transition to broken states, and cannot recover except by being restarted. Kubernetes provides liveness probes to detect and remedy such situations...",
-      "score": 0.87,
-      "dense_score": 0.92,
-      "sparse_score": 0.78,
-      "source": "hybrid",
-      "metadata": {
-        "autoindexer": "default_k8s-docs-autoindexer",
-        "source_type": "git",
-        "repository": "https://github.com/kubernetes/website.git",
-        "branch": "main",
-        "file_path": "content/en/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes.md",
-        "change_type": "full",
-        "timestamp": "2026-03-23T10:15:30.000Z"
-      }
-    },
-    ...
-  ],
-  "count": 5
-}
-```
+## Appendix: Raw Benchmark Data
 
-Notice the rich metadata in each result — you can see the exact file path in the Kubernetes docs repo, the Git commit, and the relevance scores from both dense and sparse search. The hybrid approach means you get results that match both the semantic meaning of your question *and* keyword relevance.
+### Per-Question Metrics (all three strategies)
 
-**Retrieve Request Parameters:**
+| # | Topic | RAG Latency | Hybrid Latency | Local Latency | RAG Tokens | Hybrid Tokens | Local Tokens | RAG Files | Hybrid Files | Local Files | Completeness: RAG / Hybrid / Local |
+|---|-------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1 | Scheduler Preemption | 133ms | 4,729ms | 43,277ms | 2,986 | 8,632 | 11,783 | 5 | 9 | 13 | 33% / 67% / 100% |
+| 2 | Topology Spread | 109ms | 3,619ms | 16,984ms | 3,858 | 9,875 | 12,672 | 7 | 10 | 13 | 60% / 60% / 100% |
+| 3 | Admission Webhooks | 93ms | 3,002ms | 22,763ms | 2,703 | 15,777 | 10,159 | 7 | 13 | 12 | 40% / 80% / 100% |
+| 4 | Watch Cache | 130ms | 5,342ms | 24,102ms | 3,332 | 5,577 | 5,505 | 4 | 4 | 6 | 40% / 40% / 100% |
+| 5 | Kubelet Eviction | 98ms | 4,463ms | 32,045ms | 2,991 | 8,610 | 8,048 | 4 | 11 | 9 | 20% / 80% / 100% |
+| 6 | Kubelet Probes | 108ms | 5,761ms | 31,848ms | 3,207 | 5,360 | 6,886 | 8 | 11 | 7 | 40% / 80% / 100% |
+| 7 | Deployment Rolling Update | 92ms | 5,478ms | 29,453ms | 4,986 | 8,102 | 11,730 | 9 | 10 | 13 | 60% / 80% / 100% |
+| 8 | GC Cascading Delete | 88ms | 5,517ms | 24,954ms | 2,380 | 3,769 | 8,193 | 6 | 7 | 7 | 40% / 60% / 100% |
+| 9 | kube-proxy iptables | 131ms | 3,573ms | 29,724ms | 2,897 | 6,851 | 8,606 | 6 | 10 | 7 | 0% / 60% / 100% |
+| 10 | RBAC Authorizer | 127ms | 4,421ms | 23,052ms | 4,380 | 6,749 | 8,258 | 10 | 15 | 15 | 40% / 40% / 100% |
 
-| Parameter | Description |
-| --- | --- |
-| `index_name` | The name of the index to search (matches the AutoIndexer's `indexName`) |
-| `query` | The natural language question or search query |
-| `max_node_count` | Maximum number of document chunks to return |
+### Chunk Count Tuning (RAG-Only)
 
-### Programmatic Access with the Python Client
+| Metric | n=5 | n=10 | n=20 |
+|--------|:---:|:---:|:---:|
+| Avg Latency | 107ms | 111ms | 117ms |
+| Avg Tokens/Query | 1,640 | 3,372 | 6,194 |
+| Avg Unique Files | 3.7 | 6.6 | 11.5 |
+| Avg Top Score | 0.662 | 0.700 | 0.753 |
+| Token Cost vs n=5 | 1.0x | 2.1x | 3.8x |
+| File Coverage vs n=5 | 1.0x | 1.8x | 3.1x |
 
-For application developers, KAITO provides the [`kaito-rag-engine-client`](https://pypi.org/project/kaito-rag-engine-client/) Python library for programmatic access. Since the RAGEngine is now exposed via a public IP, you can connect directly from any machine — no `kubectl port-forward` required:
+### Infrastructure
 
-```bash
-pip install kaito-rag-engine-client
-```
-
-```python
-from kaito_rag_engine_client import Client
-from kaito_rag_engine_client.models import RetrieveRequest
-from kaito_rag_engine_client.api.index import retrieve_index
-
-# Point the client at the RAGEngine's public IP
-RAGENGINE_URL = "http://20.XX.XX.XX"  # Replace with your EXTERNAL-IP
-
-client = Client(base_url=RAGENGINE_URL)
-
-# Retrieve relevant Kubernetes docs
-retrieve_resp = retrieve_index.sync(
-    client=client,
-    body=RetrieveRequest.from_dict({
-        "index_name": "k8s-docs",
-        "query": "How do I set resource limits on a container?",
-        "max_node_count": 5,
-    })
-)
-
-# Use the results in your application
-for result in retrieve_resp.results:
-    print(f"Score: {result.score}")
-    print(f"Source: {result.metadata.get('file_path', 'unknown')}")
-    print(f"Text: {result.text[:200]}...")
-    print("---")
-```
-
-Because the endpoint is publicly reachable, this same code works from local development machines, CI/CD pipelines, serverless functions, or any other service — making it straightforward to integrate RAGEngine context retrieval into chatbots, developer tools, documentation search engines, or any application that benefits from grounded AI responses.
-
-## What We've Built
-
-Let's recap the full system:
-
-1. **Qdrant** runs as a persistent, high-performance vector database on a dedicated AKS node pool, storing all document embeddings with full durability
-2. **KAITO RAGEngine** provides the embedding pipeline and REST API layer — converting documents to vectors, storing them in Qdrant, and serving hybrid search queries
-3. **KAITO AutoIndexer** continuously monitors the Kubernetes documentation GitHub repo, automatically ingesting new and updated content into the RAGEngine
-
-The result is a **self-updating Kubernetes documentation knowledge base** that anyone in your organization can query using natural language. No manual document processing, no custom ingestion scripts, no vector database tuning — just declarative Kubernetes resources.
-
-## Next Steps
-
-Now that you have a working RAG knowledge base on AKS, here's how to extend it:
-
-- **Add more data sources** — Create additional AutoIndexer resources to index your internal documentation, runbooks, or code repositories alongside the Kubernetes docs
-- **Configure scheduled re-indexing** — Add a `schedule` field to your AutoIndexer (e.g., `"0 */6 * * *"` for every 6 hours) to keep your knowledge base fresh automatically
-- **Enable drift detection** — Switch your `driftRemediationPolicy.strategy` to `Auto` to automatically reconcile when the source drifts from the index
-
-## Resources
-
-- [KAITO RAGEngine Documentation](https://kaito-project.github.io/kaito/docs/rag)
-- [KAITO AutoIndexer Repository](https://github.com/kaito-project/autoindexer)
-- [KAITO Project](https://github.com/kaito-project/kaito)
-- [Qdrant Documentation](https://qdrant.tech/documentation/)
-- [`kaito-rag-engine-client` Python Package](https://pypi.org/project/kaito-rag-engine-client/)
+- **RAG Engine**: KAITO RAGEngine on AKS, GPU-based (`Standard_NV36ads_A10_v5`)
+- **Vector Store**: Qdrant v1.13.4 with persistent storage
+- **Embedding Model**: BAAI/bge-small-en-v1.5
+- **Index**: `kubernetes-codebase` — full Kubernetes source
+- **Local Search**: ripgrep 14.x on Linux (x64)
+- **LLM**: Claude Opus 4.6 (via GitHub Copilot) for answer synthesis
