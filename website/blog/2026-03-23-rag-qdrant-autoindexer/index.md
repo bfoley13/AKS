@@ -17,7 +17,7 @@ So I ran the experiment.
 
 I took open pull requests from the [`kubernetes` github repo](https://github.com/kubernetes/kubernetes). Real bugs, actively being fixed by real contributors. I extracted just the issue description (not the PR description, not the diff, nothing that would leak the answer) and gave each issue to three different agent configurations:
 
-- **RAG Only**: Semantic search over an indexed copy of the entire Kubernetes codebase via [KAITO RAG Engine](https://github.com/kaito-project/kaito). No local files, no web access. The agent queries the index, gets ranked code snippets back, and works from those alone.
+- **RAG Only**: Semantic search over an indexed copy of the entire Kubernetes codebase via [KAITO RAG Engine](https://kaito-project.github.io/kaito/docs/rag). No local files, no web access. The agent queries the index, gets ranked code snippets back, and works from those alone.
 - **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes/kubernetes. The agent must start with RAG for discovery, then can read local files for precision.
 - **Local Only**: Full clone, grep, find, cat. No RAG, no web. The agent explores the codebase the old-fashioned way.
 
@@ -261,7 +261,7 @@ Retrieval changes how agents find code. It doesn’t fix their tendency to reaso
 If you’re setting up AI-assisted development on a large codebase:
 
 **Index your codebase.**
-A semantic index is worth it. Even RAG-only reached 61% with no local file access. Retrieval gives agents a fast, high-signal starting point.
+A semantic index is worth it. Even RAG-only reached 61% with no local file access. Tools like KAITO make this straightforward: point it at a repo, and you get a retrieval layer over your codebase.
 
 **Use hybrid, but enforce the workflow.**
 Combining retrieval with local files is the most consistent approach, but only if you require the agent to use both. If retrieval is optional, it will be skipped.
@@ -298,7 +298,7 @@ Until agents can reliably answer “what else needs to change?”, they’ll rem
 
 | Score | Criteria |
 |-------|----------|
-| 4 | All files in the ground truth diff are touched |
+| 4 | All files in the PR diff are touched |
 | 3 | Most files touched, or all correct files identified but one missed in output |
 | 2 | Core file(s) correct but missed secondary files (tests, callers, integration points) |
 | 1 | Only partially overlaps with PR files |
