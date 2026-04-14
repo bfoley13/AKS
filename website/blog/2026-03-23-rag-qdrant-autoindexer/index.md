@@ -18,7 +18,7 @@ So I ran the experiment.
 I took open pull requests from the [`kubernetes` github repo](https://github.com/kubernetes/kubernetes). Real bugs, actively being fixed by real contributors. I extracted just the issue description (not the PR description, not the diff, nothing that would leak the answer) and gave each issue to three different agent configurations:
 
 - **RAG Only**: Semantic search over an indexed copy of the entire Kubernetes codebase via [KAITO RAG Engine](https://github.com/kaito-project/kaito). No local files, no web access. The agent queries the index, gets ranked code snippets back, and works from those alone.
-- **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes/kubernetes. The agent must start with RAG for discovery, then can read local files for precision — exact line numbers, full function bodies, test infrastructure.
+- **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes/kubernetes. The agent must start with RAG for discovery, then can read local files for precision.
 - **Local Only**: Full clone, grep, find, cat. No RAG, no web. The agent explores the codebase the old-fashioned way.
 
 Each agent ran in a completely isolated session. Same model (Claude Opus), same timeout (5 minutes), same output format. The only variable was how they could see code.
@@ -104,8 +104,6 @@ Hybrid is the slowest on average at **2 minutes 25 seconds**. The mandatory RAG-
 
 Local matches Hybrid's average but for different reasons. Hybrid spends time on RAG queries followed by targeted file reads. Local burns time on broad exploration: grepping, finding, iterating through directories.
 
-Two sessions hit the 5-minute wall: Local on #134540 (spent too long cloning) and Local on #138000 (too much code to explore in the XL PR).
-
 
 ## Token Economics
 
@@ -184,7 +182,7 @@ This is a real hazard for code-aware agents. if the codebase already has a parti
 
 ### Mandatory RAG changes fix architecture
 
-On #138211, forcing 3 RAG queries before writing any code made a material difference. The mandatory exploration pushed the agent to discover the policy evaluation layer before jumping to a fix. That extra context led to better architectural choices.
+On #138211, forcing RAG queries before writing any code made a material difference. The mandatory exploration pushed the agent to discover the policy evaluation layer before jumping to a fix. That extra context led to better architectural choices.
 
 On #138191, the impact was even starker. RAG-only scored 9/20 because it only fixed `containerByCreatedThenID` and completely missed the second sort type `containerStatusByCreated`. Without local file access to grep for all sort implementations, it found half the problem. Both Hybrid and Local found both sorts and scored 15/20.
 
