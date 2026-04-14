@@ -1,250 +1,382 @@
 ---
-title: "I Indexed the Entire Kubernetes Codebase into a RAG Pipeline and Here's What I Learned About Code Search at Scale"
+title: "I Gave an AI Agent Kubernetes Bugs and a RAG Index. Here's What Actually Happened."
 date: 2026-03-23
-description: "How semantic retrieval, local code search, and hybrid strategies compare when navigating 4.5 million lines of Go with real benchmarks."
+description: "A field report on semantic retrieval, local code, and hybrid approaches to AI-assisted code generation in a 4M-line codebase."
 authors:
 - brandon-foley
 tags: ["kaito", "ai", "rag", "ragengine", "autoindexer", "code-search"]
 ---
 
-The Kubernetes codebase is 4.5 million lines of Go spread across 22,000+ files. When you're debugging a scheduler preemption issue at 2am during an oncall incident, you don't have time to `grep -r` your way through it. You need the right file, the right function, the right line, and you need it *now*.
 
-So I deployed and connected systems that lets me ask natural language questions like *"How does the scheduler handle pod preemption and victim selection?"* and get back the exact source files, function signatures, and call chains that answer it. Then I benchmarked three different retrieval strategies against 10 real questions spanning every major Kubernetes subsystem, and the results challenged some assumptions I had about leveraging RAG for coding.
+I've been using AI agents daily for some time now, and not as a novelty, but as part of my actual engineering workflow. One question that kept nagging me was, If I hand an agent a bug report and just say "fix this," how close does it actually get? Not explaining the fix to me. Not summarizing the issue. Actually producing a diff I could submit as a pull request.
 
-This post walks through the architecture, the benchmark methodology, and the data. If you're building AI-powered code intelligence tools, these findings will save you weeks of experimentation.
+So I ran the experiment.
 
-## The Setup: KAITO RAGEngine + Qdrant + The Kubernetes Source
 
-The retrieval backend is [KAITO RAGEngine](https://github.com/kaito-project/kaito), a Kubernetes-native RAG pipeline that runs on AKS. It uses [Qdrant](https://qdrant.tech/) as the vector store and [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) as the embedding model. The full Kubernetes source tree was chunked and indexed into a `kubernetes-codebase` index.
+## The Setup
 
-The API is simple:
+I took open pull requests from the [`kubernetes` github repo](https://github.com/kubernetes/kubernetes). Real bugs, actively being fixed by real contributors. I extracted just the issue description (not the PR description, not the diff, nothing that would leak the answer) and gave each issue to three different agent configurations:
 
-```bash
-curl -X POST http://$RAG_HOST/retrieve \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "index_name": "kubernetes-codebase",
-    "query": "scheduler pod preemption victim selection",
-    "max_node_count": 10
-  }'
-```
+- **RAG Only**: Semantic search over an indexed copy of the entire Kubernetes codebase via [KAITO RAG Engine](https://github.com/kaito-project/kaito). No local files, no web access. The agent queries the index, gets ranked code snippets back, and works from those alone.
+- **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes/kubernetes. The agent must start with RAG for discovery, then can read local files for precision — exact line numbers, full function bodies, test infrastructure.
+- **Local Only**: Full clone, grep, find, cat. No RAG, no web. The agent explores the codebase the old-fashioned way.
 
-You get back ranked chunks with relevance scores, file paths, and metadata. Latency is typically 90-150ms.
+Each agent ran in a completely isolated session. Same model (Claude Opus), same timeout (5 minutes), same output format. The only variable was how they could see code.
 
-But the interesting question isn't whether RAG *works*, it's whether it works *well enough* for code, where precision matters more than any other domain.
+One critical constraint: the RAG and Hybrid agents were required to make RAG queries before producing any fix. Early experiments showed that without this mandate, hybrid agents would skip RAG entirely when the issue mentioned specific filenames — defeating the whole point of the comparison.
 
-## The Benchmark: 10 Questions Across Every Major Kubernetes Subsystem
 
-I designed 10 questions that a Kubernetes engineer would actually ask during development or incident response. Each targets a different subsystem and requires understanding multiple files, call chains, and data structures:
 
-| # | Question | Target Subsystem |
-|---|---------|:---:|
-| 1 | How does the scheduler handle pod preemption and victim selection? | `scheduler/framework/plugins/defaultpreemption` |
-| 2 | How does the scheduler evaluate topology spread constraints during filtering? | `scheduler/framework/plugins/podtopologyspread` |
-| 3 | How does the API server chain admission webhooks? | `apiserver/pkg/admission/plugin/webhook` |
-| 4 | How does the API server implement watch caching and event fan-out? | `apiserver/pkg/storage/cacher` |
-| 5 | How does kubelet evict pods under memory pressure? | `kubelet/eviction` |
-| 6 | How does kubelet probe containers for liveness/readiness? | `kubelet/prober` |
-| 7 | How does the Deployment controller implement rolling updates? | `controller/deployment` |
-| 8 | How does the garbage collector handle cascading deletion? | `controller/garbagecollector` |
-| 9 | How does kube-proxy in iptables mode program ClusterIP rules? | `proxy/iptables` |
-| 10 | How does the RBAC authorizer evaluate request permissions? | `auth/authorizer/rbac` |
+## The Hypothesis (What I Expected vs. What Actually Matters)
 
-Each question requires knowledge of struct definitions, interface contracts, function call chains across multiple files, and sometimes cross-subsystem interactions.
+Going in, I assumed the main difference would be how well each approach finds the right code.
 
-I then tested three retrieval strategies against all 10:
+What actually mattered more was something else entirely. Agents are good at fixing what they can see locally, but bad at discovering what else needs to change.
 
-1. **RAG-Only** — Pure semantic retrieval via KAITO RAGEngine
-2. **Hybrid** — RAG for semantic discovery + local `ripgrep` for structural code navigation
-3. **Local-Only** — Pure keyword search with `ripgrep` across the cloned repo
+Retrieval changes how they search.  RAG surfaces snippets, local tools traverse the repo, but it doesn’t change how they reason about system boundaries, call chains, or architectural intent.
 
-Each strategy was implemented as an [OpenClaw](https://github.com/openclaw/openclaw) skill, a reusable, declarative instruction file that teaches an AI agent *how* to use a tool. The RAG-only skill tells the agent how to call the `/retrieve` API and interpret results. The hybrid skill layers on local search instructions: use RAG file paths to scope `ripgrep`, extract function bodies with `sed`, and discover related files the embedding model missed. No custom code, just structured guidance that any OpenClaw instance can pick up and execute.
+That distinction shows up everywhere in the results: multi-file bugs, test updates, error handling patterns, and integration points.
 
-This matters because the skills are portable. Drop the SKILL.md into any OpenClaw workspace with access to a KAITO RAGEngine endpoint, and the agent immediately knows how to search the indexed codebase. The hybrid skill just needs a local clone and `ripgrep` installed. The agent handles the orchestration, calling the API, parsing results, running grep, merging context, all based on the skill's instructions.
 
-Metrics tracked per query: retrieval latency, context tokens consumed, unique source files returned, and a qualitative **completeness score**, what percentage of key implementation aspects each strategy surfaced.
+## The Issues
 
-## Finding #1: The Chunk Count Sweet Spot Is Not What You'd Expect
+| # | PR | Bug | SIG | Size | Files |
+|---|------|-----|-----|------|-------|
+| 1 | #134540 | SubPath volume mount race condition (EEXIST) | sig/storage | XS | 3 |
+| 2 | #138211 | Image pull record poisoning (preloaded images) | sig/node | M | 5 |
+| 3 | #138244 | NUMA topology stall on GB200 systems (O(2^n)) | sig/node | L | 2 |
+| 4 | #136013 | OOM score panic on zero memory capacity | sig/node | S | 2 |
+| 5 | #138269 | Scheduler SchedulingGates missing Pod/Update event | sig/scheduling | S | 2 |
+| 6 | #138158 | ServiceCIDR deletion race in allocator | sig/network | M | 3 |
+| 7 | #135970 | Missing initializer in StatefulSet slice builder | sig/apps | M | 4 |
+| 8 | #138000 | Windows kube-proxy stale remote endpoint cleanup | sig/network | XL | 5 |
+| 9 | #138191 | Container status sort by attempt (clock rollback) | sig/node | M | 5 |
 
-Before comparing strategies, I needed to tune `max_node_count`, or how many chunks the RAG returns per query. I tested n=5, n=10, and n=20.
+They span kubelet, scheduler, networking, storage, and apps. From a one-line guard clause to a 900-line cross-file refactor.
 
-| Metric | n=5 | n=10 | n=20 |
-|--------|:---:|:---:|:---:|
-| Avg Latency | 107ms | 111ms | 117ms |
-| Avg Context Tokens | 1,640 | 3,372 | 6,194 |
-| Avg Unique Files | 3.7 | 6.6 | 11.5 |
-| Avg Top Score | 0.662 | 0.700 | 0.753 |
 
-The latency difference is negligible, only 10ms between n=5 and n=20. What changes dramatically is file coverage and token cost.
+## The Scoreboard
 
-**n=10 is the sweet spot.** It delivers 80% of n=20's file coverage (6.6 vs 11.5 unique files) at 54% of the token cost (3,372 vs 6,194 tokens). The diminishing returns from n=10 to n=20 are steep. You pay an extra 2,822 tokens to get 4.9 more files, most of which are CHANGELOGs, proto definitions, and OpenAPI specs. For the test questions, this turned out to be noise.
+Each result was graded across five dimensions (0–4 each):
 
-The real insight: **n=5 misses entire subsystems.** For Question 9 (iptables proxy), n=5 returned only test files and documentation. The actual `proxier.go` implementation didn't appear until n=10. If you're building a code intelligence tool on top of RAG, defaulting to n=5 can produce answers that look correct but are missing key implementation aspects.
+- Files: Did the diff touch the correct files?
+- Location: Was the fix applied in the correct function/layer?
+- Mechanism: Was the approach architecturally correct or just functionally similar?
+- Tests: Were existing tests updated and/or meaningful new tests added?
+- Completeness: Were all affected files, call sites, and edge cases covered?
 
-## Finding #2: RAG Is Fast but Structurally Blind
+Scores reflect alignment with the actual PR diff, not just whether the fix “works.”
 
-Here's the headline result. Three strategies, same 10 questions:
+| PR | Issue | RAG | Hybrid | Local |
+|----|-------|-----|--------|-------|
+| #134540 | SubPath EEXIST race | 7/20 (33%) | 8/20 (40%) | 1/20 (7%) |
+| #138211 | Image pull poisoning | 8/20 (40%) | 14/20 (70%) | 9/20 (45%) |
+| #138244 | NUMA topology stall | 9/20 (45%) | 10/20 (50%) | 10/20 (50%) |
+| #136013 | OOM score zero-memory | 15/20 (75%) | 17/20 (85%) | 20/20 (100%) |
+| #138269 | SchedulingGates Pod/Update | 18/20 (90%) | 18/20 (90%) | 19/20 (95%) |
+| #138158 | ServiceCIDR deletion race | 16/20 (80%) | 17/20 (85%) | 18/20 (90%) |
+| #135970 | StatefulSet slice builder | 16/20 (80%) | 18/20 (90%) | 17/20 (85%) |
+| #138000 | Windows stale endpoints | 11/20 (55%) | 11/20 (55%) | 8/20 (40%) |
+| #138191 | Container status sort | 9/20 (45%) | 15/20 (75%) | 15/20 (75%) |
+| **Average** | | **12.1/20 (61%)** | **14.2/20 (71%)** | **13.0/20 (65%)** |
 
-| Metric | RAG-Only | Hybrid | Local-Only |
-|--------|:---:|:---:|:---:|
-| **Avg Latency** | 111ms | 4,591ms | 27,820ms |
-| **Avg Context Tokens** | 3,372 | 7,930 | 9,184 |
-| **Avg Unique Files** | 6.6 | 10.0 | 10.2 |
-| **Completeness Score** | **37%** | **65%** | **100%** |
 
-Read that completeness number again. **RAG-only surfaces 37% of the key implementation aspects.** That means for nearly two-thirds of the structural code knowledge you need interface definitions, call chains, sibling implementations, config types, but the RAG returns nothing.
+## Timing
 
-This isn't a KAITO-specific problem. It's a fundamental limitation of embedding-based retrieval for code. Embeddings capture *semantic similarity* (what the code is about), but they don't capture *structural relationships* (who calls what, which interface does this implement, what other files handle the same pattern differently).
+Every session had a 5-minute ceiling. Here's how long each actually took:
 
-Here's a concrete example. For Question 9, "How does kube-proxy in iptables mode program ClusterIP rules?", here's what each strategy found:
+| PR | RAG | Hybrid | Local |
+|----|-----|--------|-------|
+| #134540 | 55s | 3m00s | 5m00s |
+| #138211 | 2m30s | 3m30s | 2m30s |
+| #138244 | 41s | 44s | 2m00s |
+| #136013 | 31s | 55s | 41s |
+| #138269 | 44s | 1m12s | 1m23s |
+| #138158 | 1m41s | 1m48s | 52s |
+| #135970 | 1m23s | 2m43s | 1m32s |
+| #138000 | 1m28s | 4m03s | 4m57s |
+| #138191 | 1m34s | 3m54s | 2m52s |
+| **Average** | **1m16s** | **2m25s** | **2m24s** |
 
-| Aspect | RAG-Only | Hybrid | Local-Only |
-|--------|:---:|:---:|:---:|
-| `iptables/proxier.go` implementation | ❌ | ✅ | ✅ |
-| `syncProxyRules` function | ❌ | ✅ | ✅ |
-| KUBE-SVC / KUBE-SEP chain structure | ❌ | ❌ | ✅ |
-| Cross-implementation comparison (nftables, IPVS, winkernel) | ❌ | ✅ | ✅ |
-| Proxier struct definition | ❌ | ❌ | ✅ |
+RAG is consistently the fastest. It doesn't read files, navigate directories, or wait for grep results. It asks the index, gets snippets, and generates. Average wall-clock: **1 minute 16 seconds**.
 
-RAG returned *zero* useful aspects for this question. It found test files, a README about nftables, and some tangentially related code. The actual implementation, the thing you'd need to understand to debug a kube-proxy issue, was completely absent.
+Hybrid is the slowest on average at **2 minutes 25 seconds**. The mandatory RAG-first phase adds overhead before local exploration even begins. On complex PRs like #138000 and #138191, Hybrid pushed past 3-4 minutes.
 
-This pattern repeats across questions. RAG consistently misses:
+Local matches Hybrid's average but for different reasons. Hybrid spends time on RAG queries followed by targeted file reads. Local burns time on broad exploration: grepping, finding, iterating through directories.
 
-- **Interface definitions** — Found the type but not the interface it implements
-- **Entry points** — Found the implementation but not where it's called from
-- **Sibling implementations** — Found iptables but not nftables/IPVS/winkernel
-- **Configuration types** — Found the runtime code but not the config structs that control its behavior
+Two sessions hit the 5-minute wall: Local on #134540 (spent too long cloning) and Local on #138000 (too much code to explore in the XL PR).
 
-## Finding #3: Hybrid Search Is the Practical Winner
 
-The hybrid strategy of using RAG for semantic discovery then `ripgrep` for structural navigation, hits the practical sweet spot:
+## Token Economics
 
-```
-RAG says: "The scheduler preemption logic is in defaultpreemption/default_preemption.go"
-Local search says: "That function is called from schedule_one.go:288, and there's a PodGroup 
-variant in podgrouppreemption.go, and the PostFilter interface is defined in framework/interface.go:265"
-```
+Token usage isn’t just about how much context the agent reads—it’s dominated by how many times it calls the model.
 
-RAG provides the *"where to look"* signal. Local search provides the *"what's actually there"* precision. Together, they produce answers that include:
+Claude’s API is stateless, so every call replays the full conversation. That makes call count the primary cost multiplier.
 
-- Exact file paths and line numbers
-- Complete function signatures
-- Caller → callee relationships
-- Parallel implementations across subsystems
-- Interface contracts that define the abstraction boundaries
+Three patterns stood out:
 
-The cost is latency: 4.6 seconds average vs 111ms for RAG-only. That's because `ripgrep` across 4.5 million lines of Go takes 3-5 seconds per query, even on a fast machine. But for a code investigation tool (as opposed to a real-time chatbot), 4.6 seconds is perfectly acceptable.
+- Hybrid is the most expensive, not because it reads more, but because it makes the most calls. The RAG to local loop creates repeated round-trips, and each one replays a growing context window.
+- RAG and Local cost about the same, for opposite reasons. RAG pulls more new context (via retrieval), while Local makes more exploratory calls. The totals converge.
+- Fewer calls beats fewer tokens.  Sessions that stayed under ~5 calls were consistently cheaper, regardless of approach.
 
-**The key architectural insight:** The hybrid approach uses RAG file paths to *scope* the local search. Instead of grepping the entire repo blind (27.8 seconds), it greps within the 6-10 files RAG identified as relevant, then does a targeted broader search for specific identifiers. This cuts local search time by 6x compared to the local-only strategy.
+Here’s the full breakdown:
 
-## Finding #4: Local-Only Is Exhaustive but Impractical
+| PR | Approach | Calls | New Tokens | Output | Cached (replay) | Total (all) |
+|----|----------|-------|-----------|--------|----------------|-------------|
+| #134540 | RAG | 3 | 46K | 1K | 89K | 136K |
+| #134540 | Hybrid | 12 | 27K | 3K | 262K | 292K |
+| #134540 | Local | 12 | 25K | 3K | 249K | 277K |
+| #135970 | RAG | 5 | 45K | 4K | 183K | 232K |
+| #135970 | Hybrid | 12 | 33K | 6K | 446K | 485K |
+| #135970 | Local | 9 | 27K | 4K | 284K | 315K |
+| #136013 | RAG | 2 | 30K | 2K | 21K | 53K |
+| #136013 | Hybrid | 5 | 28K | 2K | 98K | 128K |
+| #136013 | Local | 3 | 24K | 1K | 44K | 69K |
+| #138000 | RAG | 3 | 15K | 3K | 60K | 78K |
+| #138000 | Hybrid | 20 | 44K | 8K | 690K | 742K |
+| #138000 | Local | 14 | 36K | 10K | 380K | 426K |
+| #138158 | RAG | 6 | 34K | 3K | 183K | 220K |
+| #138158 | Hybrid | 7 | 32K | 3K | 223K | 258K |
+| #138158 | Local | 4 | 26K | 2K | 115K | 143K |
+| #138191 | RAG | 5 | 40K | 3K | 170K | 213K |
+| #138191 | Hybrid | 4 | 13K | 2K | 86K | 100K |
+| #138191 | Local | 3 | 13K | 2K | 57K | 72K |
+| #138211 | RAG | 6 | 87K | 3K | 330K | 420K |
+| #138211 | Hybrid | 4 | 18K | 2K | 93K | 113K |
+| #138211 | Local | 3 | 17K | 3K | 62K | 82K |
+| #138244 | RAG | 4 | 63K | 1K | 159K | 223K |
+| #138244 | Hybrid | 2 | 7K | 1K | 25K | 33K |
+| #138244 | Local | 3 | 8K | 2K | 52K | 62K |
+| #138269 | RAG | 3 | 32K | 2K | 74K | 108K |
+| #138269 | Hybrid | 5 | 37K | 4K | 179K | 220K |
+| #138269 | Local | 7 | 29K | 5K | 218K | 252K |
 
-Local-only search achieved 100% completeness on every question, it never misses, because it's doing exhaustive keyword matching. But the tradeoffs are severe:
+**Averages:**
 
-- **251x slower than RAG** (27.8 seconds vs 111ms)
-- **Requires domain expertise** to write good grep patterns. The queries that worked used identifiers like `syncProxyRules`, `runAttemptToDeleteWorker`, `selectVictimsOnNode`, you need to already know the codebase to ask the right questions.
-- **No relevance ranking** — returns everything that matches, including generated code, test helpers, and apply-configuration boilerplate. You spend more time filtering noise.
-- **Requires a local clone** — the Kubernetes repo is ~1.3GB. Not always practical.
+| Approach | Calls | New | Output | Cached | Total |
+|----------|-------|-----|--------|--------|-------|
+| **RAG** | 4 | 44K | 2K | 141K | 187K |
+| **Hybrid** | 8 | 27K | 3K | 234K | 264K |
+| **Local** | 6 | 23K | 4K | 162K | 189K |
 
-Local search has its place, but it's not viable as an interactive code intelligence backend.
 
-## Finding #5: Token Economics Change the Calculus
+The worst case was #138000 (Windows kube-proxy): Hybrid made 20 calls and accumulated 690K cached tokens, driving total usage to 742K. The issue wasn’t the size of the code it was the number of back-and-forth steps.
 
-In production, you're paying for tokens, both the context tokens you send to the LLM and the output tokens it generates. Here's how the strategies compare:
+Across all runs, call count was the biggest driver of both cost and latency.
 
-| Strategy | Avg Tokens/Query | Cost per 10 Queries (@ $3/M input) | Annual Cost (100 queries/day) |
-|----------|:---:|:---:|:---:|
-| RAG-Only (n=5) | 1,640 | $0.05 | $18 |
-| RAG-Only (n=10) | 3,372 | $0.10 | $37 |
-| RAG-Only (n=20) | 6,194 | $0.19 | $68 |
-| Hybrid | 7,930 | $0.24 | $87 |
-| Local-Only | 9,184 | $0.28 | $100 |
+## What I Actually Learned
 
-The token differences might look small per query, but they compound. An engineering team running 100 queries a day would spend $37/year with RAG n=10 vs $87/year with hybrid, and the hybrid answers are nearly twice as complete.
+### Nobody gets the subtle stuff
 
-More importantly, the *quality* of tokens matters. RAG's 3,372 tokens are all semantically relevant snippets selected by the embedding model. Local-only's 9,184 tokens include generated code, swagger docs, and test wrappers that dilute the LLM's attention. Hybrid's 7,930 tokens combine the best of both, RAG's curated snippets plus local search's precise function bodies.
+The PR for #134540 was a two-layer fix. In `doSafeMakeDir`, change `%s` to `%w` in the error format string so the EEXIST error is wrapped rather than stringified. Then in the caller (`kubelet_pods.go`), add `!goerrors.Is(err, os.ErrExist)` to tolerate that specific wrapped error.
 
-## The Architecture for Production
+0 out of 27 sessions got this. Every approach chose to swallow the EEXIST error at the source. Functionally similar, architecturally wrong. The actual PR preserves the error and lets the caller decide what to tolerate.
 
-Based on these findings, here's the architecture I'd recommend for a production code intelligence system:
+This is a Go idiom thing. Error wrapping with `%w` for programmatic handling is a design choice that requires understanding the caller-callee contract. The agents see the immediate error and fix it locally. They don't think about who else might need to inspect that error.
 
-```
-┌──────────────────────────────────────────────────────┐
-│                  Query Router                        │
-│                                                      │
-│  1. Send query to RAG (n=10)              ~111ms     │
-│  2. Check top score                                  │
-│     ├── Score ≥ 0.8 → Return RAG-only     ~111ms     │
-│     └── Score < 0.8 → Augment with local  ~4.5s      │
-│         a. Extract file paths from RAG               │
-│         b. ripgrep key identifiers in those files    │
-│         c. ripgrep across pkg/ for missed files      │
-│         d. Merge and deduplicate context             │
-│  3. Send combined context + question to LLM          │
-└──────────────────────────────────────────────────────┘
-```
+Every agent fixed the symptom. None preserved the contract.
 
-The score-based routing is important. When RAG returns a top score ≥ 0.8, the semantic match is strong enough that local search adds little value. In our benchmark, ~30% of queries had top scores ≥ 0.8. This fast-path optimization cuts average latency from 4.6s to ~3.3s while preserving completeness on the harder questions.
+### The “partial fix blindness” problem
 
-## What This Means for AI-Powered Code Tools
+PR #134540 was also a trap for Local and Hybrid. Part of the fix was already merged at HEAD. `!os.IsExist(err)` was already in the subpath files. Both local approaches saw this and concluded "already fixed," stopping investigation. They missed that the PR adds a second defense layer at the caller level and changes the error wrapping verb.
 
-If you're building code intelligence tools, whether it's a codebase Q&A bot, an AI-powered code reviewer, or an IDE plugin, here are the lessons:
+This is a real hazard for code-aware agents. if the codebase already has a partial fix, the agent sees it and moves on. It doesn't ask "is there more to do?"
 
-**1. RAG alone isn't enough for code.** Embedding similarity finds the right neighborhood, but code understanding requires structural navigation such as call chains, interface hierarchies, sibling implementations. Plan for a hybrid architecture from day one.
+### Mandatory RAG changes fix architecture
 
-**2. Chunk count tuning matters more than model choice.** Going from n=5 to n=10 improved our file coverage by 78% with zero latency penalty. That's a bigger impact than most embedding model upgrades.
+On #138211, forcing 3 RAG queries before writing any code made a material difference. The mandatory exploration pushed the agent to discover the policy evaluation layer before jumping to a fix. That extra context led to better architectural choices.
 
-**3. Use RAG to scope, not to answer.** The highest-value use of RAG in code search is identifying *which files are relevant*. Once you know `default_preemption.go` is the right file, a simple `grep` gives you the function body, the callers, and the interface it implements, things embedding models can't surface.
+On #138191, the impact was even starker. RAG-only scored 9/20 because it only fixed `containerByCreatedThenID` and completely missed the second sort type `containerStatusByCreated`. Without local file access to grep for all sort implementations, it found half the problem. Both Hybrid and Local found both sorts and scored 15/20.
 
-**4. Measure completeness, not just relevance.** Standard RAG benchmarks measure whether the top-k results contain the answer. For code, the question is whether you found *all the structural pieces* needed to understand the system. Our completeness score, aspects found vs total aspects, revealed gaps that standard metrics would miss.
+### Well-specified issues flatten the playing field
 
-**5. The economics favor hybrid.** At $87/year for 100 queries/day, hybrid search costs less than a single engineer-hour saved per month. If it prevents even one extra hour of code archaeology per month, it's ROI-positive.
+PRs #136013 (OOM score guard) and #138269 (SchedulingGates event) were the most precisely described issues. They named the exact function, the exact file, and the exact expected behavior. Scores clustered tight:
 
-## Try It Yourself
+#136013: RAG 75%, Hybrid 85%, Local 100%.
+#138269: RAG 90%, Hybrid 90%, Local 95%.
 
-The full stack runs on AKS using three open-source components:
+Local won both. When the issue says exactly where to look, grep is all you need. RAG adds overhead without adding signal. When issue quality is high enough, the retrieval method barely matters. The issue itself becomes the spec.
 
-- [**KAITO RAGEngine**](https://github.com/kaito-project/kaito) — The retrieval pipeline with Qdrant vector storage
-- [**KAITO AutoIndexer**](https://github.com/kaito-project/autoindexer) — Automated ingestion from Git repos
-- [**Qdrant**](https://qdrant.tech/) — Production-grade vector database with hybrid search
+### Large PRs expose a scope discovery gap
 
-Index any codebase (not just Kubernetes), tune `max_node_count`, and bolt on local search for the queries where semantic retrieval falls short. The deployment walkthrough is in our [companion kaito-cookbook on setting up KAITO RAGEngine with Qdrant and AutoIndexer](https://github.com/kaito-project/kaito-cookbook/tree/master/examples/qdrant-rag-autoindexer).
+PR #138000 (Windows kube-proxy, 913 lines, 5 files) was the biggest non-refactor PR. All three approaches correctly identified and fixed the core bug, an inverted local/remote priority filter in `getAllEndpointsByNetwork`. But none discovered that `proxier.go` also needed changes: deferred cleanup integration, a `deleteTerminatedEndpoints` refactor, and a `NETWORK_TYPE_L2BRIDGE` constant.
+
+Agents focus on the root cause file and miss integration changes. The 671 lines of `proxier_test.go` integration tests were unreachable by all approaches. This is a fundamental limit: agents fix the bug they can see, not the surrounding code that needs to evolve with it.
+
+### Agents prefer new fields over reusing existing ones
+
+On #138191 (container status sorting), the PR used the existing `RestartCount` field on the Status struct for the sort comparator. All three agents added a new `Attempt` field instead. Functionally correct, architecturally heavier. Nobody discovered that `RestartCount` already serves as the equivalent of `Attempt` for container status.
+
+I saw this across multiple PRs: agents prefer adding new things to reusing existing abstractions. They don't have the institutional knowledge to know "we already have a field for that."
+
+### Prompt discipline is not optional
+
+Early in this experiment, the Hybrid agent prompt said "you may use the KAITO RAG API" and "you may also read local files." Both optional. The agent optimized for speed and skipped RAG entirely on 2 of 3 PRs, going straight to local files when the issue mentioned specific filenames.
+
+Adding "you MUST start with RAG" changed everything. The mandatory exploration step forced broader context before the agent committed to a fix direction.
+
+If you're building agent pipelines, don't make retrieval optional. If you have a RAG index, require the agent to use it. Agents will take shortcuts unless you explicitly prevent them.
+
+
+## Where Things Break
+
+After 27 sessions across 9 PRs, some clear patterns emerge.
+
+### Hybrid wins overall, but not by a landslide
+
+71% average vs 65% for Local and 61% for RAG. Hybrid's edge is consistency. It never scored below 40% and hit 90% twice. It combines RAG's discovery breadth with Local's implementation precision.
+
+### Local wins on well-specified bugs
+
+When the issue names the file and function, Local scored highest on 4 of 9 PRs. No retrieval overhead, no API round-trips, just read the code and fix it. The more precise the issue, the less RAG matters.
+
+### RAG is fastest and cheapest, but falls apart on multi-file bugs
+
+Average 1m16s, often under a minute. But RAG can only see what the index returns. On #138191, it found one sort type but missed the second. On #138000, it found the bug file but missed the integration file. If the fix spans files that don't share keywords, RAG loses.
+
+### Issue quality matters more than retrieval method
+
+The score spread between approaches on a well-specified bug like #138269 was 5 points. On a vague one like #134540, it was 33 points. Writing a better bug report is worth more than switching from RAG to Hybrid.
+
+### Agents can't update existing tests
+
+Every session could produce new test cases. None could reliably update existing test expectations. If your PR needs to flip a `want: true` to `want: false` somewhere, you're still doing that yourself. Hybrid on #138211 was the only session across all 27 that flipped existing test expectations.
+
+### There's a complexity ceiling around 5 files
+
+Below 5 files changed, at least one approach scored 85% or higher on every PR. Above 5 files, the best score on any approach was 75%. Multi-file integration changes (updating call sites, renaming types across consumers, threading new parameters) are beyond single shot code generation regardless of retrieval method.
+
+## The Bottom Line
+
+Across all approaches, the biggest limitation wasn’t generating code, it was figuring out the full scope of what needed to change.
+
+Retrieval changes how agents find code. It doesn’t fix their tendency to reason locally and miss system-level implications.
+
+| | RAG | Hybrid | Local |
+|--|-----|--------|-------|
+| **Avg Score** | 61% | 71% | 65% |
+| **Avg Time** | 1m16s | 2m25s | 2m24s |
+| **Avg New Tokens** | 44K | 27K | 23K |
+| **Best For** | Speed, well-scoped bugs | Consistency, multi-file bugs | Precise issues with exact file and function |
+| **Worst At** | Multi-file scope discovery | Cost on complex PRs | Vague issues, large codebases |
+
+If you’re setting up AI-assisted development on a large codebase:
+
+**Index your codebase.**
+A semantic index is worth it. Even RAG-only reached 61% with no local file access. Retrieval gives agents a fast, high-signal starting point.
+
+**Use hybrid, but enforce the workflow.**
+Combining retrieval with local files is the most consistent approach, but only if you require the agent to use both. If retrieval is optional, it will be skipped.
+
+**Write issues like specs.**
+The highest-leverage improvement wasn’t tooling, it was issue quality. When the bug report named the file, function, and expected behavior, all approaches converged toward correct fixes.
+
+**Optimize for fewer steps, not smaller context.**
+Cost and latency scaled with the number of model calls, not just token volume. Reducing back-and-forth interactions is the biggest lever.
+
+**Don’t rely on agents for test updates.**
+They can generate new tests, but rarely modify existing expectations correctly.
+
+**Expect local reasoning, not system reasoning.**
+Agents reliably fix the code in front of them, but miss adjacent changes, integration points, and existing abstractions. Plan for human review on anything that spans multiple files.
+
+We’re not bottlenecked on code generation anymore. We’re bottlenecked on problem framing and scope discovery.
+
+Until agents can reliably answer “what else needs to change?”, they’ll remain strong assistants for local fixes, but weak contributors to system-level changes.
 
 ---
 
-## Appendix: Raw Benchmark Data
+*The benchmark used Claude Opus via [OpenClaw](https://github.com/openclaw/openclaw) with [KAITO RAG Engine](https://github.com/kaito-project/kaito) indexing the kubernetes/kubernetes repository at HEAD. All sessions ran in isolated subagents with no shared state, April 2026. Ground truth was the actual PR diff from each open pull request.*
 
-### Per-Question Metrics (all three strategies)
+---
 
-| # | Topic | RAG Latency | Hybrid Latency | Local Latency | RAG Tokens | Hybrid Tokens | Local Tokens | RAG Files | Hybrid Files | Local Files | Completeness: RAG / Hybrid / Local |
-|---|-------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | Scheduler Preemption | 133ms | 4,729ms | 43,277ms | 2,986 | 8,632 | 11,783 | 5 | 9 | 13 | 33% / 67% / 100% |
-| 2 | Topology Spread | 109ms | 3,619ms | 16,984ms | 3,858 | 9,875 | 12,672 | 7 | 10 | 13 | 60% / 60% / 100% |
-| 3 | Admission Webhooks | 93ms | 3,002ms | 22,763ms | 2,703 | 15,777 | 10,159 | 7 | 13 | 12 | 40% / 80% / 100% |
-| 4 | Watch Cache | 130ms | 5,342ms | 24,102ms | 3,332 | 5,577 | 5,505 | 4 | 4 | 6 | 40% / 40% / 100% |
-| 5 | Kubelet Eviction | 98ms | 4,463ms | 32,045ms | 2,991 | 8,610 | 8,048 | 4 | 11 | 9 | 20% / 80% / 100% |
-| 6 | Kubelet Probes | 108ms | 5,761ms | 31,848ms | 3,207 | 5,360 | 6,886 | 8 | 11 | 7 | 40% / 80% / 100% |
-| 7 | Deployment Rolling Update | 92ms | 5,478ms | 29,453ms | 4,986 | 8,102 | 11,730 | 9 | 10 | 13 | 60% / 80% / 100% |
-| 8 | GC Cascading Delete | 88ms | 5,517ms | 24,954ms | 2,380 | 3,769 | 8,193 | 6 | 7 | 7 | 40% / 60% / 100% |
-| 9 | kube-proxy iptables | 131ms | 3,573ms | 29,724ms | 2,897 | 6,851 | 8,606 | 6 | 10 | 7 | 0% / 60% / 100% |
-| 10 | RBAC Authorizer | 127ms | 4,421ms | 23,052ms | 4,380 | 6,749 | 8,258 | 10 | 15 | 15 | 40% / 40% / 100% |
+## Apendix
 
-### Chunk Count Tuning (RAG-Only)
+### Grading Criteria
 
-| Metric | n=5 | n=10 | n=20 |
-|--------|:---:|:---:|:---:|
-| Avg Latency | 107ms | 111ms | 117ms |
-| Avg Tokens/Query | 1,640 | 3,372 | 6,194 |
-| Avg Unique Files | 3.7 | 6.6 | 11.5 |
-| Avg Top Score | 0.662 | 0.700 | 0.753 |
-| Token Cost vs n=5 | 1.0x | 2.1x | 3.8x |
-| File Coverage vs n=5 | 1.0x | 1.8x | 3.1x |
+#### Scoring Rubric (/20, five dimensions × 4pts each)
 
-### Infrastructure
+##### 1. Correct Files Identified (4pts)
 
-- **RAG Engine**: KAITO RAGEngine on AKS, GPU-based (`Standard_NV36ads_A10_v5`)
-- **Vector Store**: Qdrant v1.13.4 with persistent storage
-- **Embedding Model**: BAAI/bge-small-en-v1.5
-- **Index**: `kubernetes-codebase` — full Kubernetes source
-- **Local Search**: ripgrep 14.x on Linux (x64)
-- **LLM**: Claude Opus 4.6 (via GitHub Copilot) for answer synthesis
+| Score | Criteria |
+|-------|----------|
+| 4 | All files in the ground truth diff are touched |
+| 3 | Most files touched, or all correct files identified but one missed in output |
+| 2 | Core file(s) correct but missed secondary files (tests, callers, integration points) |
+| 1 | Only partially overlaps with PR files |
+| 0 | Completely wrong files |
+
+**What counts:** The agent's diff must touch the file, not just mention it. Mentioning a file in analysis without producing changes gets +1 partial credit at most.
+
+##### 2. Fix Location Within File (4pts)
+
+| Score | Criteria |
+|-------|----------|
+| 4 | Same function, same insertion/modification point as PR |
+| 3 | Same function, slightly different position (e.g., guard placed 5 lines earlier/later) |
+| 2 | Right file but wrong function, or right function but wrong layer (e.g., fixing at callee vs caller) |
+| 1 | Right package but wrong file or completely wrong function |
+| 0 | Wrong package entirely |
+
+**Key distinction:** "Wrong layer" is a 2. Fixing the bug at the error source when PR fixes it at the caller (or vice versa) means the agent understood the symptom but not the design intent.
+
+##### 3. Fix Mechanism / Architectural Correctness (4pts)
+
+| Score | Criteria |
+|-------|----------|
+| 4 | Same approach as PR — same data flow, same abstractions, same error handling pattern |
+| 3 | Functionally correct fix but different architecture (e.g., inline vs deferred, swallowing vs wrapping errors, new field vs reusing existing field) |
+| 2 | Partially correct — fixes the immediate symptom but introduces a different tradeoff or misses a subtle requirement |
+| 1 | Addresses the right problem area but fix is wrong or incomplete enough to not work |
+| 0 | Wrong fix entirely |
+
+**This is the hardest dimension to score.** The key question: "Would a reviewer accept this as equivalent to the PR, or would they request a redesign?" A 3 means "works but reviewer would suggest a better approach." A 4 means "reviewer would approve as-is."
+
+##### 4. Test Quality (4pts)
+
+| Score | Criteria |
+|-------|----------|
+| 4 | Updates existing test expectations correctly AND adds meaningful new test cases covering the fix |
+| 3 | Good new tests but misses updating existing expectations, OR updates existing but weak new tests |
+| 2 | Tests exist but are shallow — e.g., standalone `t.Run` instead of using existing table structure, or only happy path |
+| 1 | Minimal or broken tests — wrong assertions, won't compile, or test the wrong thing |
+| 0 | No tests produced |
+
+**Important nuance:** I don't penalize for missing tests that cover code the agent didn't change. If the agent didn't touch `proxier.go`, I don't dock test points for missing `proxier_test.go` — that gets captured in Completeness instead. Tests are scored relative to the scope of the agent's fix.
+
+**Existing test updates matter a lot.** Flipping `want: true` → `want: false` on existing cases was something almost no session did. That's the difference between a 3 and a 4.
+
+##### 5. Completeness (4pts)
+
+| Score | Criteria |
+|-------|----------|
+| 4 | All affected files, all edge cases, all call site updates, all mechanical changes |
+| 3 | Core fix complete, missed one secondary concern (cosmetic renames, one call site, one edge case) |
+| 2 | Core fix present but significant parts of the PR are missing (whole files untouched, integration layer missing) |
+| 1 | Only the most obvious change, most of the PR scope is missing |
+| 0 | Barely started |
+
+**This is the catch-all.** Things that land here:
+- Missing call site updates (e.g., every caller of a function whose signature changed)
+- Missing mechanical/cosmetic changes (variable renames, constant additions)
+- Missing integration-layer changes (proxier.go changes when only hns.go was fixed)
+- Missing edge case handling
+- Scope discovery failures (agent fixes root cause file but misses that 3 other files need updating)
+
+##### Cross-cutting Rules
+
+1. **No answer-leaking credit.** If a session found the actual PR diff via GitHub API, the entire run is disqualified and rerun with constraints.
+
+2. **Functional equivalence counts.** If the agent's fix is architecturally different but would pass the same test suite and handle the same edge cases, that's a 3 on mechanism, not a 2.
+
+3. **Cosmetic differences don't matter.** Variable names (`sanitizedImage` vs `sanitizedForPolicyCheck`), comment verbosity, log message wording — all ignored.
+
+4. **Compilation matters.** If the diff clearly wouldn't compile (wrong function signatures, missing imports), that's a -1 on whichever dimension it affects.
+
+5. **Scoring is against PR, not against perfection.** A creative fix that's arguably *better* than the PR still gets scored against what the PR actually did. This keeps scoring objective.
+
+##### What I Learned About This Rubric
+
+The biggest scoring gap across all PRs was consistently **Completeness**. Agents nail the core fix (dimensions 1-3 tend to score 3+) but miss integration changes, call site updates, and test infrastructure. The second-weakest dimension was **Test Quality** — specifically updating existing tests rather than just adding new ones.
+
+The rubric slightly favors well-scoped PRs (XS/S) where there's less to miss on Completeness, which is why Local scored 20/20 on `#136013` (2-file, 12-line change) but only 8-16/20 on XL PRs.
