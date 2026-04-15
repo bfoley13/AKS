@@ -217,9 +217,9 @@ As a result, while skills may improve outcomes, they do not remove the core bott
 
 ## Appendix
 
-<details>
-<summary>Grading Criteria</summary>
-<br>
+### Grading Criteria
+
+#### Scoring Rubric (/20, five dimensions × 4pts each)
 
 ##### 1. Correct Files Identified (4pts)
 
@@ -288,5 +288,3 @@ As a result, while skills may improve outcomes, they do not remove the core bott
 - Missing integration-layer changes (proxier.go changes when only hns.go was fixed)
 - Missing edge case handling
 - Scope discovery failures (agent fixes root cause file but misses that 3 other files need updating)
-
-</details>
