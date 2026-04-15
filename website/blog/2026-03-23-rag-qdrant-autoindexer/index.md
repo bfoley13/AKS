@@ -282,6 +282,7 @@ As a result, while skills may improve outcomes, they do not remove the core bott
 | 0 | Barely started |
 
 **This is the catch-all.** Things that land here:
+
 - Missing call site updates (e.g., every caller of a function whose signature changed)
 - Missing mechanical/cosmetic changes (variable renames, constant additions)
 - Missing integration-layer changes (proxier.go changes when only hns.go was fixed)
