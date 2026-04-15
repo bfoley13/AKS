@@ -1,6 +1,6 @@
 ---
 title: "I Gave an AI Agent Kubernetes Bugs and a RAG Index. Here's What Actually Happened."
-date: 2026-03-23
+date: 2026-04-15
 description: "A field report on semantic retrieval, local code, and hybrid approaches to AI-assisted code generation in a 4M-line codebase."
 authors:
 - brandon-foley
