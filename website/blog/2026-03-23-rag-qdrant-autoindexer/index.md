@@ -8,26 +8,22 @@ tags: ["kaito", "ai", "rag", "ragengine", "autoindexer", "code-search"]
 ---
 
 
-I’ve been using AI agents daily for some time now.  Not as a novelty, but as part of my actual engineering workflow.  There’s a lot of surface level optimism about what these systems can do, especially with techniques like retrieval-augmented generation (RAG) that promise to make large codebases “searchable” to models.
-
-But a more practical question kept bothering me: how do these systems actually perform when the codebase is millions of lines, the bug spans multiple files, and the fix isn’t obvious  If I give an agent a real bug report and simply say “fix this,” how close does it get to something I could merge as a pull request, without guidance or explanation?
-
-Going in, I assumed performance would mostly come down to how well the system retrieves relevant code.  Better search, whether through RAG or filesystem traversal, felt like it would be the dominant factor.
-
-That wasn’t what mattered most.
-
-The real difference was whether the agent could infer the full scope of the change.  Agents were generally good at fixing what was immediately visible, but unreliable at discovering what else needed to change as a consequence.
-
-Retrieval mainly changes how information is found.  RAG returns semantically related snippets, while local tools traverse the repository.  But neither meaningfully improves how agents reason about system boundaries, call chains, or architectural intent.
-
-That gap shows up consistently in multi-file bugs, test updates, error handling changes, and integration point cases where the failure isn’t locating code, but understanding what else is affected.
+I've been using AI coding agents daily for some time now, not as a novelty, but as part of my actual engineering workflow. There's a lot of surface-level optimism about what these agents can do, especially with techniques like retrieval-augmented generation (RAG) that promise to make large codebases "searchable" to models. You might believe we're close to a world where you paste a bug report, say "fix this," and get back a merge-ready pull request.
+ 
+But how well does that hold up in practice? Not on toy examples or self-contained scripts, but against real bugs in a codebase with millions of lines of code, where the fix spans multiple files and the root cause isn't obvious from any single snippet. I wanted to find out — so I ran a series of structured experiments, giving agents real bug reports from a large-scale project (Kubernetes repo) and measuring how close they got to correct, complete fixes without any guidance or hints.
+ 
+Going in, my assumption was straightforward: performance would come down to how well the system retrieves relevant code. Better search — whether through RAG or filesystem traversal — should be the dominant factor. A model that finds the right files should produce the right fix.
+ 
+What I found was more nuanced, and at times, surprising. The bottleneck wasn't where I expected. The patterns that emerged — around retrieval, multi-file reasoning, scope inference, and architectural understanding — challenged some of my initial beliefs and revealed failure modes I hadn't anticipated.
+ 
+In the sections that follow, I'll walk through the experimental setup, the specific results, and the lessons I took away. If you're integrating agents into a real engineering workflow, or building tools that support them, I think these findings will change how you think about what actually matters.
 
 
 ## The Setup
 
 I took open pull requests from the [`kubernetes` github repo](https://github.com/kubernetes/kubernetes).  Real bugs, actively being fixed by real contributors.  I extracted just the issue description (not the PR description, not the diff, nothing that would leak the solution) and gave each issue to three different agent configurations:
 
-- **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining BM25 for keyword matching with embedding based semantic search.  Results are merged and ranked before being returned as context snippets.  No local files or web access; the agent only sees retrieved chunks.
+- **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining BM25 for keyword matching with embedding based semantic search. KATIO also provides an auto-indexing controller which is perfect for indexing huge git repos with the capability of incremental indexing.  Results are merged and ranked before being returned as context snippets.  No local files or web access; the agent only sees retrieved chunks.
 - **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes repository.  The agent must start with RAG for discovery, then can read local files for precision.
 - **Local Only**: Full clone, grep, find, cat.  No RAG, no web.  The agent explores the codebase through direct filesystem traversal.
 
