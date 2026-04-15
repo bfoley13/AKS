@@ -218,7 +218,7 @@ As a result, while skills may improve outcomes, they do not remove the core bott
 
 ---
 
-## Apendix
+## Appendix
 
 ### Grading Criteria
 
