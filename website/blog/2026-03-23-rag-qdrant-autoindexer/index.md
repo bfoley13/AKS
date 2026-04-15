@@ -141,14 +141,14 @@ Across all runs, call count was the biggest driver of both cost and latency.
 
 ## What I Actually Learned
 
-### Agent Fix Locally, Not Systemically
+### Agent fix locally, not systemically
 Agents are good at fixing the problem directly in front of them, but struggle to reason about the broader system.
 
 PR #134540 is a good example. The correct fix required preserving an error (`%w`) so the caller could handle it, and then updating the caller to tolerate that specific case.  Every agent instead swallowed the error at the source. Functionally similar, but architecturally wrong.
 
 This shows up consistently: agents fix symptoms in isolation, but miss the contracts between components.
 
-### Scope Discovery Is The Real Bottleneck
+### Scope discovery is the real bottleneck
 The biggest failure mode wasn’t incorrect fixes, it was incomplete ones.
 
 Agents routinely fixed the “main” bug but missed adjacent changes:
@@ -158,7 +158,7 @@ Agents routinely fixed the “main” bug but missed adjacent changes:
 
 The common pattern that emerged was agents don’t ask “what else needs to change?”  They stop once the immediate issue appears resolved.  This is most visible in multi-file changes, where agents fix the local bug but fail to propagate required updates across integration points.
 
-### Retrieval Changes Discovery, Not Reasoning
+### Retrieval changes discovery, not reasoning
 
 RAG meaningfully affects how agents find code, but not how they reason about it.
 
@@ -166,19 +166,19 @@ Forcing RAG usage improved results in some cases. On #138211, mandatory retrieva
 
 But the limitation remains, once the relevant code is found, the agent still reasons locally.  Retrieval helps with navigation, not with understanding system wide implications.
 
-### Issue Quality Dominates Everything
-Well-specified issues flatten the differences between approaches.
-
-On PRs like #136013 and #138269, the issue descriptions named the exact file, function, and expected behavior.  All approaches converged to high scores, with Local slightly ahead simply due to speed and direct access.
-
-When the issue effectively acts as a spec, retrieval method matters far less.  When the issue is vague, performance diverges significantly.
-
-### Agents Prefer Adding Over Reusing
+### Agents prefer adding over reusing
 When given a choice, agents tend to introduce new abstractions rather than reuse existing ones.
 
 On #138191, the correct fix used the existing `RestartCount` field.  All agents instead introduced a new `Attempt` field. Functionally correct, but architecturally heavier.
 
 This pattern showed up repeatedly.  Agents don’t reliably recognize when the system already contains the concept they need. They solve the problem in isolation rather than integrating with existing design.  This also shows up in tests.  Agents tend to add new tests rather than update existing ones, even when behavior changes require modifying assertions.
+
+### Issue quality dominates everything
+Well-specified issues flatten the differences between approaches.
+
+On PRs like #136013 and #138269, the issue descriptions named the exact file, function, and expected behavior.  All approaches converged to high scores, with Local slightly ahead simply due to speed and direct access.
+
+When the issue effectively acts as a spec, retrieval method matters far less.  When the issue is vague, performance diverges significantly.
 
 
 ## The Bottom Line
