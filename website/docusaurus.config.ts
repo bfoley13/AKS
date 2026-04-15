@@ -15,15 +15,15 @@ const config: Config = {
   },
 
   // Set the production url of your site here
-  url: 'https://blog.aks.azure.com',
+  url: 'https://bfoley13.github.io',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/',
+  baseUrl: '/AKS/',
   trailingSlash: false,
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'pauldotyu', // Usually your GitHub org/user name.
+  organizationName: 'bfoley13', // Usually your GitHub org/user name.
   projectName: 'aks-blog', // Usually your repo name.
 
   onBrokenLinks: 'throw',
