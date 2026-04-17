@@ -131,7 +131,7 @@ Across all runs, call count was the biggest driver of both cost and latency.
 
 ## What I Actually Learned
 
-### Agent fix locally, not systemically
+### Agents fix locally, not systemically
 
 Agents are good at fixing the problem directly in front of them, but struggle to reason about the broader system.
 
