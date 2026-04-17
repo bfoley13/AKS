@@ -19,7 +19,7 @@ In the sections that follow, I'll walk through the experimental setup, the speci
 
 ## The Setup
 
-I took open pull requests from the [`kubernetes` github repo](https://github.com/kubernetes/kubernetes).  Real bugs, actively being fixed by real contributors.  I extracted just the issue description (not the PR description, not the diff, nothing that would leak the solution) and gave each issue to three different agent configurations:
+I took open pull requests from the [`kubernetes` GitHub repo](https://github.com/kubernetes/kubernetes).  Real bugs, actively being fixed by real contributors.  I extracted just the issue description (not the PR description, not the diff, nothing that would leak the solution) and gave each issue to three different agent configurations:
 
 - **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining BM25 for keyword matching with embedding based semantic search. KATIO also provides an auto-indexing controller which is perfect for indexing huge git repos with the capability of incremental indexing.  Results are merged and ranked before being returned as context snippets.  No local files or web access; the agent only sees retrieved chunks.
 - **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes repository.  The agent must start with RAG for discovery, then can read local files for precision.
