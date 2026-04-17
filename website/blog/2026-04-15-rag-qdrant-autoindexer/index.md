@@ -53,7 +53,7 @@ Each generated diff was compared against the corresponding pull request diff and
 - Tests: Were existing tests updated or meaningful new tests added?
 - Completeness: Did the patch propagate changes across all required call sites and dependent paths?
 
-This evaluation uses the PR diff as the reference implementation.  That is not a perfect trut.  PRs reflect iterative discussion and may not represent the only or final correct solution.  Here, it serves as a proxy for ‘what human contributors converged on under review constraints.’
+This evaluation uses the PR diff as the reference implementation.  That isn't a perfect ground truth.  PRs reflect iterative discussion and may not represent the only or final correct solution.  Here, it serves as a proxy for "what human contributors converged on under review constraints."
 
 ## The Scoreboard
 
