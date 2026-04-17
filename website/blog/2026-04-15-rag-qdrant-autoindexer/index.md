@@ -70,7 +70,7 @@ This evaluation uses the PR diff as the reference implementation.  That isn't a 
 | #138191 | Container status sort | 9/20 (45%) | 15/20 (75%) | 15/20 (75%) |
 | **Average** | | **12.1/20 (61%)** | **14.2/20 (71%)** | **13.0/20 (65%)** |
 
-Performance varied more by task type than by approach.  Multi-file and integration heavy bugs showed clear separation, while single-file fixes converged across all methods.  On average, Hybrid performed best (71%), but the gap is small relative to per task variance.
+Performance varied more by task type than by approach. Multi-file and integration-heavy bugs showed clear separation, while single-file fixes converged across all methods. On average, Hybrid performed best (71%), but the gap is small relative to per-task variance.
 
 The gap isn’t massive, but it’s consistent.  Hybrid never collapsed on any single test case, while RAG struggled more on multi-file bugs and Local was more variable depending on how well specified the issue was.
 
