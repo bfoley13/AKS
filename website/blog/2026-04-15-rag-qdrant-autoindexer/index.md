@@ -7,21 +7,19 @@ authors:
 tags: ["kaito", "ai", "rag", "ragengine", "autoindexer", "code-search"]
 ---
 
-I've been using AI coding agents daily for some time now, not as a novelty, but as part of my actual engineering workflow. There's a lot of surface-level optimism about what these agents can do, especially with techniques like retrieval-augmented generation (RAG) that promise to make large codebases "searchable" to models. You might believe we're close to a world where you paste a bug report, say "fix this," and get back a merge-ready pull request.
+I've been using AI coding agents as part of my daily engineering workflow and wanted to understand how well they actually perform on real-world bugs.
 
-But how well does that hold up in practice? Not on toy examples or self-contained scripts, but against real bugs in a codebase with millions of lines of code, where the fix spans multiple files and the root cause isn't obvious from any single snippet. I wanted to find out — so I ran a series of structured experiments, giving agents real bug reports from a large-scale project (Kubernetes repo) and measuring how close they got to correct, complete fixes without any guidance or hints.
+To test this, I ran a series of structured experiments using bug reports from the Kubernetes repository, evaluating whether agents could produce correct, complete fixes without guidance in a large, multi-million-line codebase. My initial assumption was simple. Success would largely depend on retrieval.  Whether via retrieval-augmented generation (RAG) or filesystem search, a model that finds the right code should be able to generate the right fix.
 
-Going in, my assumption was straightforward: performance would come down to how well the system retrieves relevant code. Better search — whether through RAG or filesystem traversal — should be the dominant factor. A model that finds the right files should produce the right fix.
+That assumption didn’t fully hold. Even when agents surfaced the right files, they often failed to connect changes across them, misidentified the true scope of the issue, or produced fixes that were locally plausible but globally incorrect. The bottleneck wasn’t just finding code, it was reasoning over it in context.
 
-What I found was more nuanced, and at times, surprising. The bottleneck wasn't where I expected. The patterns that emerged — around retrieval, multi-file reasoning, scope inference, and architectural understanding — challenged some of my initial beliefs and revealed failure modes I hadn't anticipated.
-
-In the sections that follow, I'll walk through the experimental setup, the specific results, and the lessons I took away. If you're integrating agents into a real engineering workflow, or building tools that support them, I think these findings will change how you think about what actually matters.
+![Benchmarking AI agent retrieval strategies on Kubernetes bug fixes](./hero.svg)
 
 ## The Setup
 
 I took open pull requests from the [`kubernetes` GitHub repo](https://github.com/kubernetes/kubernetes).  Real bugs, actively being fixed by real contributors.  I extracted just the issue description (not the PR description, not the diff, nothing that would leak the solution) and gave each issue to three different agent configurations:
 
-- **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining BM25 for keyword matching with embedding based semantic search. KATIO also provides an auto-indexing controller which is perfect for indexing huge git repos with the capability of incremental indexing.  Results are merged and ranked before being returned as context snippets.  No local files or web access; the agent only sees retrieved chunks.
+- **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining [BM25 for keyword matching with embedding based semantic search](https://qdrant.tech/documentation/tutorials-search-engineering/reranking-hybrid-search/). KATIO also provides an auto-indexing controller which is perfect for indexing huge git repos with the capability of incremental indexing.  Results are merged and ranked before being returned as context snippets.  No local files or web access; the agent only sees retrieved chunks.
 - **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes repository.  The agent must start with RAG for discovery, then can read local files for precision.
 - **Local Only**: Full clone, grep, find, cat.  No RAG, no web.  The agent explores the codebase through direct filesystem traversal.
 
@@ -49,7 +47,7 @@ Each generated diff was compared against the corresponding pull request diff and
 
 - Files: Did the diff touch the correct files?
 - Location: Was the fix applied in the correct function/layer?
-- Mechanism: Did the fix preserve correct system level invariants and layering, not just patch symptoms?
+- Mechanism: Did the fix preserve correct system-level invariants and layering, not just patch symptoms?
 - Tests: Were existing tests updated or meaningful new tests added?
 - Completeness: Did the patch propagate changes across all required call sites and dependent paths?
 
@@ -72,7 +70,7 @@ This evaluation uses the PR diff as the reference implementation.  That isn't a 
 
 Performance varied more by task type than by approach. Multi-file and integration-heavy bugs showed clear separation, while single-file fixes converged across all methods. On average, Hybrid performed best (71%), but the gap is small relative to per-task variance.
 
-The gap isn’t massive, but it’s consistent.  Hybrid never collapsed on any single test case, while RAG struggled more on multi-file bugs and Local was more variable depending on how well specified the issue was.
+The gap isn’t massive, but it’s consistent.  Hybrid never collapsed on any single test case, while RAG struggled more on multi-file bugs and Local was more variable depending on how well-specified the issue was.
 
 At the same time, no approach consistently reached close to perfect scores on complex changes, reinforcing that the primary limitation isn’t generating code, it’s identifying the full scope of what needs to change.
 
@@ -157,7 +155,7 @@ RAG meaningfully affects how agents find code, but not how they reason about it.
 
 Forcing RAG usage improved results in some cases. On #138211, mandatory retrieval pushed the agent to discover the policy evaluation layer before implementing a fix, leading to a better architectural choice.
 
-But the limitation remains, once the relevant code is found, the agent still reasons locally.  Retrieval helps with navigation, not with understanding system wide implications.
+But the limitation remains, once the relevant code is found, the agent still reasons locally.  Retrieval helps with navigation, not with understanding system-wide implications.
 
 ### Agents prefer adding over reusing
 
@@ -177,7 +175,7 @@ When the issue effectively acts as a spec, retrieval method matters far less.  W
 
 ## The Bottom Line
 
-These results come from large codebases (millions of lines), where correctness depends on system wide understanding rather than local edits.
+These results come from large codebases (millions of lines), where correctness depends on system-wide understanding rather than local edits.
 
 They are not about raw model capability, but about how agent workflows behave under scale.
 
@@ -193,7 +191,7 @@ Hybrid setups perform best only when retrieval is enforced. Otherwise, agents de
 
 Agents reliably fix visible issues, but fail to consistently identify all dependent changes across the system.
 
-This is the dominant failure mode in multi-file and integration heavy changes.
+This is the dominant failure mode in multi-file and integration-heavy changes.
 
 ### Issue quality is the strongest lever
 
@@ -203,88 +201,14 @@ Well defined bug reports reduce performance variance more than tooling or retrie
 
 This experiment did not use any explicit coding “skills” or curated agent playbooks.  Only prompts and tool access.
 
-In principle, structured skills (such as repo exploration strategies or architectural summarization) could improve performance by guiding agents toward better system level reasoning.
+In principle, structured skills (such as repo exploration strategies or architectural summarization) could improve performance by guiding agents toward better system-level reasoning.
 
 However, in large, evolving codebases, these skills would need to be continuously maintained and updated to remain aligned with the actual repository structure.  That makes them less like a one-time improvement and more like an additional system to operate and maintain.
 
-As a result, while skills may improve outcomes, they do not remove the core bottleneck observed in this study: scope discovery and system level reasoning under scale.
+As a result, while skills may improve outcomes, they do not remove the core bottleneck observed in this study: scope discovery and system-level reasoning under scale.
 
 ---
 
 *The benchmark used Claude Opus via [OpenClaw](https://github.com/openclaw/openclaw) with [KAITO RAG Engine](https://github.com/kaito-project/kaito) indexing the kubernetes/kubernetes repository at HEAD. All sessions ran in isolated subagents with no shared state, April 2026. Ground truth was the actual PR diff from each open pull request.*
 
 ---
-
-## Appendix
-
-### Grading Criteria
-
-#### Scoring Rubric (/20, five dimensions × 4pts each)
-
-##### 1. Correct Files Identified (4pts)
-
-| Score | Criteria |
-|-------|----------|
-| 4 | All files in the PR diff are touched |
-| 3 | Most files touched, or all correct files identified but one missed in output |
-| 2 | Core file(s) correct but missed secondary files (tests, callers, integration points) |
-| 1 | Only partially overlaps with PR files |
-| 0 | Completely wrong files |
-
-**What counts:** The agent's diff must touch the file, not just mention it. Mentioning a file in analysis without producing changes gets +1 partial credit at most.
-
-##### 2. Fix Location Within File (4pts)
-
-| Score | Criteria |
-|-------|----------|
-| 4 | Same function, same insertion/modification point as PR |
-| 3 | Same function, slightly different position (e.g., guard placed 5 lines earlier/later) |
-| 2 | Right file but wrong function, or right function but wrong layer (e.g., fixing at callee vs caller) |
-| 1 | Right package but wrong file or completely wrong function |
-| 0 | Wrong package entirely |
-
-**Key distinction:** "Wrong layer" is a 2. Fixing the bug at the error source when PR fixes it at the caller (or vice versa) means the agent understood the symptom but not the design intent.
-
-##### 3. Fix Mechanism / Architectural Correctness (4pts)
-
-| Score | Criteria |
-|-------|----------|
-| 4 | Same approach as PR — same data flow, same abstractions, same error handling pattern |
-| 3 | Functionally correct fix but different architecture (e.g., inline vs deferred, swallowing vs wrapping errors, new field vs reusing existing field) |
-| 2 | Partially correct — fixes the immediate symptom but introduces a different tradeoff or misses a subtle requirement |
-| 1 | Addresses the right problem area but fix is wrong or incomplete enough to not work |
-| 0 | Wrong fix entirely |
-
-**This is the hardest dimension to score.** The key question: "Would a reviewer accept this as equivalent to the PR, or would they request a redesign?" A 3 means "works but reviewer would suggest a better approach." A 4 means "reviewer would approve as-is."
-
-##### 4. Test Quality (4pts)
-
-| Score | Criteria |
-|-------|----------|
-| 4 | Updates existing test expectations correctly AND adds meaningful new test cases covering the fix |
-| 3 | Good new tests but misses updating existing expectations, OR updates existing but weak new tests |
-| 2 | Tests exist but are shallow — e.g., standalone `t.Run` instead of using existing table structure, or only happy path |
-| 1 | Minimal or broken tests — wrong assertions, won't compile, or test the wrong thing |
-| 0 | No tests produced |
-
-**Important nuance:** I don't penalize for missing tests that cover code the agent didn't change. If the agent didn't touch `proxier.go`, I don't dock test points for missing `proxier_test.go` — that gets captured in Completeness instead. Tests are scored relative to the scope of the agent's fix.
-
-**Existing test updates matter a lot.** Flipping `want: true` → `want: false` on existing cases was something almost no session did. That's the difference between a 3 and a 4.
-
-##### 5. Completeness (4pts)
-
-| Score | Criteria |
-|-------|----------|
-| 4 | All affected files, all edge cases, all call site updates, all mechanical changes |
-| 3 | Core fix complete, missed one secondary concern (cosmetic renames, one call site, one edge case) |
-| 2 | Core fix present but significant parts of the PR are missing (whole files untouched, integration layer missing) |
-| 1 | Only the most obvious change, most of the PR scope is missing |
-| 0 | Barely started |
-
-**This is the catch-all.** Things that land here:
-
-- Missing call site updates (e.g., every caller of a function whose signature changed)
-- Missing mechanical/cosmetic changes (variable renames, constant additions)
-- Missing integration-layer changes (proxier.go changes when only hns.go was fixed)
-- Missing edge case handling
-- Scope discovery failures (agent fixes root cause file but misses that 3 other files need updating)
