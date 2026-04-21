@@ -9,7 +9,7 @@ tags: ["kaito", "ai", "rag", "ragengine", "autoindexer", "code-search"]
 
 I've been using AI coding agents as part of my daily engineering workflow and wanted to understand how well they actually perform on real-world bugs.
 
-To test this, I ran a series of structured experiments using bug reports from the Kubernetes repository, evaluating whether agents could produce correct, complete fixes without guidance in a large, multi-million-line codebase. My initial assumption was simple. Success would largely depend on retrieval.  Whether via retrieval-augmented generation (RAG) or filesystem search, a model that finds the right code should be able to generate the right fix.
+To test this, I ran a series of structured experiments using bug reports from the Kubernetes repository, evaluating whether agents could produce correct, complete fixes without guidance in a large, multi-million-line codebase. My initial assumption was simple. Success would largely depend on retrieval. Whether via retrieval-augmented generation (RAG) or filesystem search, a model that finds the right code should be able to generate the right fix.
 
 That assumption didn’t fully hold. Even when agents surfaced the right files, they often failed to connect changes across them, misidentified the true scope of the issue, or produced fixes that were locally plausible but globally incorrect. The bottleneck wasn’t just finding code, it was reasoning over it in context.
 
@@ -17,19 +17,19 @@ That assumption didn’t fully hold. Even when agents surfaced the right files, 
 
 ## The Setup
 
-I took open pull requests from the [`kubernetes` GitHub repo](https://github.com/kubernetes/kubernetes).  Real bugs, actively being fixed by real contributors.  I extracted just the issue description (not the PR description, not the diff, nothing that would leak the solution) and gave each issue to three different agent configurations:
+I took open pull requests from the [`kubernetes` GitHub repo](https://github.com/kubernetes/kubernetes). Real bugs, actively being fixed by real contributors. I extracted just the issue description (not the PR description, not the diff, nothing that would leak the solution) and gave each issue to three different agent configurations:
 
-- **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining [BM25 for keyword matching with embedding based semantic search](https://qdrant.tech/documentation/tutorials-search-engineering/reranking-hybrid-search/). KATIO also provides an auto-indexing controller which is perfect for indexing huge git repos with the capability of incremental indexing.  Results are merged and ranked before being returned as context snippets.  No local files or web access; the agent only sees retrieved chunks.
-- **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes repository.  The agent must start with RAG for discovery, then can read local files for precision.
-- **Local Only**: Full clone, grep, find, cat.  No RAG, no web.  The agent explores the codebase through direct filesystem traversal.
+- **RAG Only**: Hybrid retrieval over an indexed copy of the Kubernetes codebase via [KAITO RAG Engine (Qdrant)](https://kaito-project.github.io/kaito/docs/rag), combining [BM25 for keyword matching with embedding based semantic search](https://qdrant.tech/documentation/tutorials-search-engineering/reranking-hybrid-search/). KATIO also provides an auto-indexing controller which is perfect for indexing huge git repos with the capability of incremental indexing. Results are merged and ranked before being returned as context snippets. No local files or web access; the agent only sees retrieved chunks.
+- **Hybrid (RAG + Local)**: Same RAG index, but also has a full local clone of kubernetes repository. The agent must start with RAG for discovery, then can read local files for precision.
+- **Local Only**: Full clone, grep, find, cat. No RAG, no web. The agent explores the codebase through direct filesystem traversal.
 
-Each agent ran in a completely isolated session.  Same model (Claude Opus 4.6), same timeout (5 minutes), same output format.  The only variable was how they could see code.
+Each agent ran in a completely isolated session. Same model (Claude Opus 4.6), same timeout (5 minutes), same output format. The only variable was how they could see code.
 
-One critical constraint: the RAG and Hybrid agents were prompted to make RAG queries before producing any fix.  Early experiments showed that without this mandate, hybrid agents would skip RAG entirely when the issue mentioned specific filenames, defeating the whole point of the comparison.
+One critical constraint: the RAG and Hybrid agents were prompted to make RAG queries before producing any fix. Early experiments showed that without this mandate, hybrid agents would skip RAG entirely when the issue mentioned specific filenames, defeating the whole point of the comparison.
 
 ## The Test Cases (Benchmark)
 
-I used a set of real, in-flight bug fixes from the Kubernetes repository as a benchmark.  Each test case is an open pull request where the agent is given only the issue description and asked to produce a patch.  They span kubelet, scheduler, networking, storage, and apps.  From a one-line guard clause to a 900-line multi-file refactor.
+I used a set of real, in-flight bug fixes from the Kubernetes repository as a benchmark. Each test case is an open pull request where the agent is given only the issue description and asked to produce a patch. They span kubelet, scheduler, networking, storage, and apps. From a one-line guard clause to a 900-line multi-file refactor.
 
 | # | PR | Bug | SIG | Size | Files |
 |---|------|-----|-----|------|-------|
@@ -51,7 +51,7 @@ Each generated diff was compared against the corresponding pull request diff and
 - Tests: Were existing tests updated or meaningful new tests added?
 - Completeness: Did the patch propagate changes across all required call sites and dependent paths?
 
-This evaluation uses the PR diff as the reference implementation.  That isn't a perfect ground truth.  PRs reflect iterative discussion and may not represent the only or final correct solution.  Here, it serves as a proxy for "what human contributors converged on under review constraints."
+This evaluation uses the PR diff as the reference implementation. That isn't a perfect ground truth. PRs reflect iterative discussion and may not represent the only or final correct solution. Here, it serves as a proxy for "what human contributors converged on under review constraints."
 
 ## The Scoreboard
 
@@ -70,7 +70,7 @@ This evaluation uses the PR diff as the reference implementation.  That isn't a 
 
 Performance varied more by task type than by approach. Multi-file and integration-heavy bugs showed clear separation, while single-file fixes converged across all methods. On average, Hybrid performed best (71%), but the gap is small relative to per-task variance.
 
-The gap isn’t massive, but it’s consistent.  Hybrid never collapsed on any single test case, while RAG struggled more on multi-file bugs and Local was more variable depending on how well-specified the issue was.
+The gap isn’t massive, but it’s consistent. Hybrid never collapsed on any single test case, while RAG struggled more on multi-file bugs and Local was more variable depending on how well-specified the issue was.
 
 At the same time, no approach consistently reached close to perfect scores on complex changes, reinforcing that the primary limitation isn’t generating code, it’s identifying the full scope of what needs to change.
 
@@ -91,17 +91,17 @@ Every session had a 5-minute ceiling. Here's how long each actually took:
 | #138191 | 1m34s | 3m54s | 2m52s |
 | **Average** | **1m16s** | **2m25s** | **2m24s** |
 
-RAG is consistently the fastest. It doesn't read files, navigate directories, or wait for grep results.  It asks the index, gets snippets, and generates.  Average wall-clock: **1 minute 16 seconds**.  This suggests retrieval reduces exploration overhead but also reduces structural exploration depth.
+RAG is consistently the fastest. It doesn't read files, navigate directories, or wait for grep results. It asks the index, gets snippets, and generates. Average wall-clock: **1 minute 16 seconds**. This suggests retrieval reduces exploration overhead but also reduces structural exploration depth.
 
-Hybrid is the slowest on average at **2 minutes 25 seconds**.  The mandatory RAG-first phase adds overhead before local exploration even begins.  On complex PRs like #138000 and #138191, Hybrid pushed past 3-4 minutes.  The tool switching loop dominates latency more than actual file access.
+Hybrid is the slowest on average at **2 minutes 25 seconds**. The mandatory RAG-first phase adds overhead before local exploration even begins. On complex PRs like #138000 and #138191, Hybrid pushed past 3-4 minutes. The tool switching loop dominates latency more than actual file access.
 
-Local matches Hybrid's average but for different reasons.  Hybrid spends time on RAG queries followed by targeted file reads.  Local burns time on broad exploration through grepping, finding, and iterating directories.  Exploration cost is highly sensitive to how well the issue text anchors the search.
+Local matches Hybrid's average but for different reasons. Hybrid spends time on RAG queries followed by targeted file reads. Local burns time on broad exploration through grepping, finding, and iterating directories. Exploration cost is highly sensitive to how well the issue text anchors the search.
 
 ## Token Economics
 
 Token usage isn’t just about how much context the agent reads—it’s dominated by how many times it calls the model.
 
-Claude’s API is stateless, so every call replays the full conversation.  That makes call count the primary cost multiplier.
+Claude’s API is stateless, so every call replays the full conversation. That makes call count the primary cost multiplier.
 
 A few terms used below:
 
@@ -121,9 +121,9 @@ A few terms used below:
 
 Three patterns stand out:
 
-- Hybrid is the most expensive, not because it reads more, but because it makes the most calls.  The RAG to local loop creates repeated round-trips, and each one replays a growing context window.
-- RAG and Local end up with similar total cost, but for opposite reasons.  RAG pulls in more new context via retrieval, while Local makes more exploratory calls.  The totals converge.
-- Fewer calls beats fewer tokens.  Sessions that stayed under ~5 calls were consistently cheaper, regardless of approach.
+- Hybrid is the most expensive, not because it reads more, but because it makes the most calls. The RAG to local loop creates repeated round-trips, and each one replays a growing context window.
+- RAG and Local end up with similar total cost, but for opposite reasons. RAG pulls in more new context via retrieval, while Local makes more exploratory calls. The totals converge.
+- Fewer calls beats fewer tokens. Sessions that stayed under ~5 calls were consistently cheaper, regardless of approach.
 
 Across all runs, call count was the biggest driver of both cost and latency.
 
@@ -133,7 +133,7 @@ Across all runs, call count was the biggest driver of both cost and latency.
 
 Agents are good at fixing the problem directly in front of them, but struggle to reason about the broader system.
 
-PR #134540 is a good example. The correct fix required preserving an error (`%w`) so the caller could handle it, and then updating the caller to tolerate that specific case.  Every agent instead swallowed the error at the source. Functionally similar, but architecturally wrong.
+PR #134540 is a good example. The correct fix required preserving an error (`%w`) so the caller could handle it, and then updating the caller to tolerate that specific case. Every agent instead swallowed the error at the source. Functionally similar, but architecturally wrong.
 
 This shows up consistently: agents fix symptoms in isolation, but miss the contracts between components.
 
@@ -147,7 +147,7 @@ Agents routinely fixed the “main” bug but missed adjacent changes:
 - On #138000, all approaches fixed the core bug but missed required changes in `proxier.go` and related integration logic.
 - On #134540, Local and Hybrid saw a partial fix already in the codebase and stopped early, missing the second required change.
 
-The common pattern that emerged was agents don’t ask “what else needs to change?”  They stop once the immediate issue appears resolved.  This is most visible in multi-file changes, where agents fix the local bug but fail to propagate required updates across integration points.
+The common pattern that emerged was agents don’t ask “what else needs to change?” They stop once the immediate issue appears resolved. This is most visible in multi-file changes, where agents fix the local bug but fail to propagate required updates across integration points.
 
 ### Retrieval changes discovery, not reasoning
 
@@ -155,23 +155,23 @@ RAG meaningfully affects how agents find code, but not how they reason about it.
 
 Forcing RAG usage improved results in some cases. On #138211, mandatory retrieval pushed the agent to discover the policy evaluation layer before implementing a fix, leading to a better architectural choice.
 
-But the limitation remains, once the relevant code is found, the agent still reasons locally.  Retrieval helps with navigation, not with understanding system-wide implications.
+But the limitation remains, once the relevant code is found, the agent still reasons locally. Retrieval helps with navigation, not with understanding system-wide implications.
 
 ### Agents prefer adding over reusing
 
 When given a choice, agents tend to introduce new abstractions rather than reuse existing ones.
 
-On #138191, the correct fix used the existing `RestartCount` field.  All agents instead introduced a new `Attempt` field. Functionally correct, but architecturally heavier.
+On #138191, the correct fix used the existing `RestartCount` field. All agents instead introduced a new `Attempt` field. Functionally correct, but architecturally heavier.
 
-This pattern showed up repeatedly.  Agents don’t reliably recognize when the system already contains the concept they need. They solve the problem in isolation rather than integrating with existing design.  This also shows up in tests.  Agents tend to add new tests rather than update existing ones, even when behavior changes require modifying assertions.
+This pattern showed up repeatedly. Agents don’t reliably recognize when the system already contains the concept they need. They solve the problem in isolation rather than integrating with existing design. This also shows up in tests. Agents tend to add new tests rather than update existing ones, even when behavior changes require modifying assertions.
 
 ### Issue quality dominates everything
 
 Well-specified issues flatten the differences between approaches.
 
-On PRs like #136013 and #138269, the issue descriptions named the exact file, function, and expected behavior.  All approaches converged to high scores, with Local slightly ahead simply due to speed and direct access.
+On PRs like #136013 and #138269, the issue descriptions named the exact file, function, and expected behavior. All approaches converged to high scores, with Local slightly ahead simply due to speed and direct access.
 
-When the issue effectively acts as a spec, retrieval method matters far less.  When the issue is vague, performance diverges significantly.
+When the issue effectively acts as a spec, retrieval method matters far less. When the issue is vague, performance diverges significantly.
 
 ## The Bottom Line
 
@@ -199,11 +199,11 @@ Well defined bug reports reduce performance variance more than tooling or retrie
 
 ### Skills can help, but they don’t remove the system problem
 
-This experiment did not use any explicit coding “skills” or curated agent playbooks.  Only prompts and tool access.
+This experiment did not use any explicit coding “skills” or curated agent playbooks. Only prompts and tool access.
 
 In principle, structured skills (such as repo exploration strategies or architectural summarization) could improve performance by guiding agents toward better system-level reasoning.
 
-However, in large, evolving codebases, these skills would need to be continuously maintained and updated to remain aligned with the actual repository structure.  That makes them less like a one-time improvement and more like an additional system to operate and maintain.
+However, in large, evolving codebases, these skills would need to be continuously maintained and updated to remain aligned with the actual repository structure. That makes them less like a one-time improvement and more like an additional system to operate and maintain.
 
 As a result, while skills may improve outcomes, they do not remove the core bottleneck observed in this study: scope discovery and system-level reasoning under scale.
 
